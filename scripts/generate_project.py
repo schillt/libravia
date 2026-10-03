@@ -43,6 +43,7 @@ settings = {
     'INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]':'YES',
     'INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]':'YES',
     'INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphone*]':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight',
+    'INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad[sdk=iphone*]':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight',
     'INFOPLIST_KEY_LSApplicationCategoryType[sdk=macosx*]':'public.app-category.books',
     'ENABLE_HARDENED_RUNTIME[sdk=macosx*]':'YES',
     'ENABLE_APP_SANDBOX[sdk=macosx*]':'YES',
