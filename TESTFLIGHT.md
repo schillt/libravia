@@ -1,6 +1,6 @@
 # Internal TestFlight setup
 
-TestFlight preparation and upload are on hold until repository publication and the subsequent Xcode workflow setup. The commands below are documentation, not a claim that archives or uploads were performed.
+The public repository is connected to Xcode Cloud. The commands below are documentation, not a claim that archives or uploads were performed.
 
 LibraVia has one shared target, scheme, and bundle identifier. iOS/iPadOS and native macOS still require separate destination archives and uploads. Use one App Store Connect app record with the matching identifier and the required platforms.
 
@@ -15,7 +15,7 @@ LibraVia has one shared target, scheme, and bundle identifier. iOS/iPadOS and na
 
 After repository publication, open the project in Xcode and configure Xcode Cloud for the shared LibraVia scheme. Connect the authorized GitHub repository, select Xcode 27 or later with the required OS 27 SDKs, and add Release Archive actions for iOS and macOS. Use TestFlight Internal Only post-actions for the intended internal group. Keep this distinct from an App Store release action.
 
-The `ci_scripts/ci_post_clone.sh` hook uses Apple's provided `CI_TEAM_ID` and `CI_PRIMARY_REPOSITORY_PATH` to create the ignored local signing configuration with restrictive file permissions. It does not print signing identifiers or require stored signing secrets. Xcode Cloud manages its own distribution-signing workflow; the local commands below are an optional fallback.
+Xcode Cloud manages signing using the team selected for the product. No custom signing hook or stored signing secrets are required. Its `CI_TEAM_ID` must not be copied into `DEVELOPMENT_TEAM`: the observed Cloud value is an App Store Connect UUID, rather than the local signing team identifier. The ignored local signing configuration is only for local builds; the commands below are an optional fallback.
 
 An app record must support both iOS and macOS. After Cloud succeeds, inspect actual archive/upload processing, resolve warnings and declarations, and verify each processed platform build is available to its group. Workflow configuration alone does not distribute a build.
 
