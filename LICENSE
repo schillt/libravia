@@ -1,0 +1,15 @@
+Copyright (c) 2026 schillt. All rights reserved.
+
+The LibraVia project source, original application resources, and documentation
+are proprietary. No permission to use, copy, modify, redistribute, sublicense,
+or commercially exploit them is granted by this repository's public visibility.
+Any such permission must be obtained separately from the copyright holder.
+
+This notice does not replace or restrict the licenses of bundled third-party
+components or their required dependencies. Those components remain governed by
+their respective licenses, including the notices in App/Resources/Licenses and
+their upstream package repositories.
+
+The original test fixtures in Fixtures are dedicated to the public domain under
+CC0 1.0 as described in Fixtures/LICENSE.txt; this proprietary notice does not
+apply to those fixtures.

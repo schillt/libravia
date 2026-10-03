@@ -1,0 +1,336 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		089A42F2B8EBF9E401964C28 /* App/Core/ArchiveExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAC6D9E8B5EB33CF52D0A8B7 /* App/Core/ArchiveExtractor.swift */; };
+		0C7E9464BF3BB95FB241A505 /* App/Resources/Licenses in Resources */ = {isa = PBXBuildFile; fileRef = 6D5D9004797377E10C60545A /* App/Resources/Licenses */; };
+		206D1605B41F21BFCBED5D82 /* JellyfinAPI in Frameworks */ = {isa = PBXBuildFile; productRef = D1D50749973C227EB7BE9254 /* JellyfinAPI */; };
+		25D2ACAE079247813A250D34 /* App/Core/BookStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBBAC092C3D1F6040A34023D /* App/Core/BookStorage.swift */; };
+		30BC9ECD161ED623072689C7 /* App/Core/CatalogPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD0EB7AE07BC73E88909A89D /* App/Core/CatalogPresentation.swift */; };
+		356B7498ED5E3EDF644EACF6 /* App/Core/Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B303777A1DB77DF7A06D9731 /* App/Core/Models.swift */; };
+		43B93784FFED01116D009C1C /* App/Resources/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 45C66AB82B8E87038BAE9A09 /* App/Resources/PrivacyInfo.xcprivacy */; };
+		502CDA56E4394CACD49A394B /* App/Readers/PDFSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC282755A8F0DC9AFA59462A /* App/Readers/PDFSurface.swift */; };
+		6D76A95507C47956CD6B2BEA /* App/Resources/Archive in Resources */ = {isa = PBXBuildFile; fileRef = 66F4804EE23DDC092D1BAE43 /* App/Resources/Archive */; };
+		7D7C5273FC545281E8C38BE8 /* App/Jellyfin/JellyfinProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0803331CEF264E2B923DF446 /* App/Jellyfin/JellyfinProvider.swift */; };
+		95870BE3105FD7093593E1E0 /* App/UI/LibraryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62F94D280C21E01531003A66 /* App/UI/LibraryViews.swift */; };
+		9B0BFAF11ED73017B4D11848 /* App/Readers/ComicSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940772012351B1911C45483B /* App/Readers/ComicSurface.swift */; };
+		ADB32512B426188DE4612256 /* App/Core/Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7878CA23EEA7586044FB612 /* App/Core/Keychain.swift */; };
+		B29B5CDF42C6DEFF38F8A26E /* App/Resources/AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 20CAA4801EEF50C02A7BE9D0 /* App/Resources/AppIcon.icon */; };
+		B8DAFA02111801BD8C896781 /* App/Core/CatalogModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96CAFA6968DE45080BB0C180 /* App/Core/CatalogModels.swift */; };
+		C007CADB176C638F7C073B31 /* App/Core/AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C1815DA7890A4162D3B3629 /* App/Core/AppModel.swift */; };
+		CCDB78E76FD20D9296A34234 /* App/UI/ProgressRematchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC0AA3555FA4ECDF2B262A2F /* App/UI/ProgressRematchView.swift */; };
+		D191FE55620174E978D24B4D /* App/Resources/Reader in Resources */ = {isa = PBXBuildFile; fileRef = D8554253F56D58E88BC82DF1 /* App/Resources/Reader */; };
+		D8E3FA356C606C0988A8B4F1 /* App/Readers/ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 321B0F81135602C89D91532D /* App/Readers/ReaderView.swift */; };
+		E0E24310847DC3AE09047858 /* App/JellyfinBooksApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 916473D507AB3C8C8F224002 /* App/JellyfinBooksApp.swift */; };
+		E206A4FB7D7D64540512558E /* Fixtures in Resources */ = {isa = PBXBuildFile; fileRef = 6FC1F09BE441258BA67129D1 /* Fixtures */; };
+		F0C110FC1DB32D92F6D3BE1B /* App/Readers/EPUBSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFDAA76E0216C29CB9D3E983 /* App/Readers/EPUBSurface.swift */; };
+		F155899EC4584C83B076A4EE /* App/UI/DiscoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 683B0E9FEB1FB9AEF4BD6BD2 /* App/UI/DiscoveryViews.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		3F60D54AF9989335D88A0458 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration/Signing.xcconfig; sourceTree = SOURCE_ROOT; };
+		0803331CEF264E2B923DF446 /* App/Jellyfin/JellyfinProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Jellyfin/JellyfinProvider.swift; sourceTree = SOURCE_ROOT; };
+		20CAA4801EEF50C02A7BE9D0 /* App/Resources/AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = App/Resources/AppIcon.icon; sourceTree = SOURCE_ROOT; };
+		321B0F81135602C89D91532D /* App/Readers/ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Readers/ReaderView.swift; sourceTree = SOURCE_ROOT; };
+		45C66AB82B8E87038BAE9A09 /* App/Resources/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = App/Resources/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		62F94D280C21E01531003A66 /* App/UI/LibraryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/UI/LibraryViews.swift; sourceTree = SOURCE_ROOT; };
+		66F4804EE23DDC092D1BAE43 /* App/Resources/Archive */ = {isa = PBXFileReference; lastKnownFileType = folder; path = App/Resources/Archive; sourceTree = SOURCE_ROOT; };
+		683B0E9FEB1FB9AEF4BD6BD2 /* App/UI/DiscoveryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/UI/DiscoveryViews.swift; sourceTree = SOURCE_ROOT; };
+		6D5D9004797377E10C60545A /* App/Resources/Licenses */ = {isa = PBXFileReference; lastKnownFileType = folder; path = App/Resources/Licenses; sourceTree = SOURCE_ROOT; };
+		6FC1F09BE441258BA67129D1 /* Fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fixtures; sourceTree = SOURCE_ROOT; };
+		8C1815DA7890A4162D3B3629 /* App/Core/AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/AppModel.swift; sourceTree = SOURCE_ROOT; };
+		916473D507AB3C8C8F224002 /* App/JellyfinBooksApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/JellyfinBooksApp.swift; sourceTree = SOURCE_ROOT; };
+		940772012351B1911C45483B /* App/Readers/ComicSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Readers/ComicSurface.swift; sourceTree = SOURCE_ROOT; };
+		96CAFA6968DE45080BB0C180 /* App/Core/CatalogModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/CatalogModels.swift; sourceTree = SOURCE_ROOT; };
+		AC282755A8F0DC9AFA59462A /* App/Readers/PDFSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Readers/PDFSurface.swift; sourceTree = SOURCE_ROOT; };
+		B303777A1DB77DF7A06D9731 /* App/Core/Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/Models.swift; sourceTree = SOURCE_ROOT; };
+		BFDAA76E0216C29CB9D3E983 /* App/Readers/EPUBSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Readers/EPUBSurface.swift; sourceTree = SOURCE_ROOT; };
+		CAC6D9E8B5EB33CF52D0A8B7 /* App/Core/ArchiveExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/ArchiveExtractor.swift; sourceTree = SOURCE_ROOT; };
+		CD0EB7AE07BC73E88909A89D /* App/Core/CatalogPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/CatalogPresentation.swift; sourceTree = SOURCE_ROOT; };
+		D8554253F56D58E88BC82DF1 /* App/Resources/Reader */ = {isa = PBXFileReference; lastKnownFileType = folder; path = App/Resources/Reader; sourceTree = SOURCE_ROOT; };
+		E7878CA23EEA7586044FB612 /* App/Core/Keychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/Keychain.swift; sourceTree = SOURCE_ROOT; };
+		EBBAC092C3D1F6040A34023D /* App/Core/BookStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/BookStorage.swift; sourceTree = SOURCE_ROOT; };
+		F6DAA3A9ABD78EE0B1B39BC8 /* LibraVia.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = LibraVia.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FC0AA3555FA4ECDF2B262A2F /* App/UI/ProgressRematchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/UI/ProgressRematchView.swift; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A41665D3875EE48041C2B42C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				206D1605B41F21BFCBED5D82 /* JellyfinAPI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0A3E27B8CA818264D75C8D81 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F6DAA3A9ABD78EE0B1B39BC8 /* LibraVia.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		0D6E4079E36703EBD37C0072 = {
+			isa = PBXGroup;
+			children = (
+				8C1815DA7890A4162D3B3629 /* App/Core/AppModel.swift */,
+				CAC6D9E8B5EB33CF52D0A8B7 /* App/Core/ArchiveExtractor.swift */,
+				EBBAC092C3D1F6040A34023D /* App/Core/BookStorage.swift */,
+				96CAFA6968DE45080BB0C180 /* App/Core/CatalogModels.swift */,
+				CD0EB7AE07BC73E88909A89D /* App/Core/CatalogPresentation.swift */,
+				E7878CA23EEA7586044FB612 /* App/Core/Keychain.swift */,
+				B303777A1DB77DF7A06D9731 /* App/Core/Models.swift */,
+				0803331CEF264E2B923DF446 /* App/Jellyfin/JellyfinProvider.swift */,
+				916473D507AB3C8C8F224002 /* App/JellyfinBooksApp.swift */,
+				940772012351B1911C45483B /* App/Readers/ComicSurface.swift */,
+				BFDAA76E0216C29CB9D3E983 /* App/Readers/EPUBSurface.swift */,
+				AC282755A8F0DC9AFA59462A /* App/Readers/PDFSurface.swift */,
+				321B0F81135602C89D91532D /* App/Readers/ReaderView.swift */,
+				683B0E9FEB1FB9AEF4BD6BD2 /* App/UI/DiscoveryViews.swift */,
+				62F94D280C21E01531003A66 /* App/UI/LibraryViews.swift */,
+				FC0AA3555FA4ECDF2B262A2F /* App/UI/ProgressRematchView.swift */,
+				D8554253F56D58E88BC82DF1 /* App/Resources/Reader */,
+				66F4804EE23DDC092D1BAE43 /* App/Resources/Archive */,
+				6D5D9004797377E10C60545A /* App/Resources/Licenses */,
+				6FC1F09BE441258BA67129D1 /* Fixtures */,
+				45C66AB82B8E87038BAE9A09 /* App/Resources/PrivacyInfo.xcprivacy */,
+				20CAA4801EEF50C02A7BE9D0 /* App/Resources/AppIcon.icon */,
+				3F60D54AF9989335D88A0458 /* Signing.xcconfig */,
+				0A3E27B8CA818264D75C8D81 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E3B87B96B7F7BF4030A9D915 /* LibraVia */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 68EF31C67DB32EA8B8277CD5 /* Build configuration list for PBXNativeTarget "LibraVia" */;
+			buildPhases = (
+				9C1DD6DFCF1811D92D4A6C2F /* Sources */,
+				0DEB3918894B805720659B9D /* Resources */,
+				A41665D3875EE48041C2B42C /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = LibraVia;
+			packageProductDependencies = (
+				D1D50749973C227EB7BE9254 /* JellyfinAPI */,
+			);
+			productName = LibraVia;
+			productReference = F6DAA3A9ABD78EE0B1B39BC8 /* LibraVia.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		244210E48437B6556980A702 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2700;
+			};
+			buildConfigurationList = 76F8DEC3DFE0BDB465198890 /* Build configuration list for PBXProject "JellyfinBooks" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 0D6E4079E36703EBD37C0072;
+			packageReferences = (
+				D2EAE1F9EDD07E6E3804EB48 /* XCRemoteSwiftPackageReference "jellyfin-sdk-swift" */,
+			);
+			productRefGroup = 0A3E27B8CA818264D75C8D81 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E3B87B96B7F7BF4030A9D915 /* LibraVia */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0DEB3918894B805720659B9D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D191FE55620174E978D24B4D /* App/Resources/Reader in Resources */,
+				6D76A95507C47956CD6B2BEA /* App/Resources/Archive in Resources */,
+				0C7E9464BF3BB95FB241A505 /* App/Resources/Licenses in Resources */,
+				E206A4FB7D7D64540512558E /* Fixtures in Resources */,
+				43B93784FFED01116D009C1C /* App/Resources/PrivacyInfo.xcprivacy in Resources */,
+				B29B5CDF42C6DEFF38F8A26E /* App/Resources/AppIcon.icon in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		9C1DD6DFCF1811D92D4A6C2F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C007CADB176C638F7C073B31 /* App/Core/AppModel.swift in Sources */,
+				089A42F2B8EBF9E401964C28 /* App/Core/ArchiveExtractor.swift in Sources */,
+				25D2ACAE079247813A250D34 /* App/Core/BookStorage.swift in Sources */,
+				B8DAFA02111801BD8C896781 /* App/Core/CatalogModels.swift in Sources */,
+				30BC9ECD161ED623072689C7 /* App/Core/CatalogPresentation.swift in Sources */,
+				ADB32512B426188DE4612256 /* App/Core/Keychain.swift in Sources */,
+				356B7498ED5E3EDF644EACF6 /* App/Core/Models.swift in Sources */,
+				7D7C5273FC545281E8C38BE8 /* App/Jellyfin/JellyfinProvider.swift in Sources */,
+				E0E24310847DC3AE09047858 /* App/JellyfinBooksApp.swift in Sources */,
+				9B0BFAF11ED73017B4D11848 /* App/Readers/ComicSurface.swift in Sources */,
+				F0C110FC1DB32D92F6D3BE1B /* App/Readers/EPUBSurface.swift in Sources */,
+				502CDA56E4394CACD49A394B /* App/Readers/PDFSurface.swift in Sources */,
+				D8E3FA356C606C0988A8B4F1 /* App/Readers/ReaderView.swift in Sources */,
+				F155899EC4584C83B076A4EE /* App/UI/DiscoveryViews.swift in Sources */,
+				95870BE3105FD7093593E1E0 /* App/UI/LibraryViews.swift in Sources */,
+				CCDB78E76FD20D9296A34234 /* App/UI/ProgressRematchView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		04EAAA5E2825E75AD06D2C1C /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 3F60D54AF9989335D88A0458 /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 53;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				"ENABLE_APP_SANDBOX[sdk=macosx*]" = YES;
+				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
+				"ENABLE_OUTGOING_NETWORK_CONNECTIONS[sdk=macosx*]" = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = LibraVia;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
+				"INFOPLIST_KEY_LSApplicationCategoryType[sdk=macosx*]" = "public.app-category.books";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]" = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphone*]" = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chameleonenterprise.LibraVia;
+				PRODUCT_NAME = LibraVia;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		0B0C687DF8B6B8DC790B519C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		1CA068EC9320FA7467B79492 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 3F60D54AF9989335D88A0458 /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 53;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				"ENABLE_APP_SANDBOX[sdk=macosx*]" = YES;
+				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
+				"ENABLE_OUTGOING_NETWORK_CONNECTIONS[sdk=macosx*]" = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = LibraVia;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
+				"INFOPLIST_KEY_LSApplicationCategoryType[sdk=macosx*]" = "public.app-category.books";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]" = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphone*]" = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chameleonenterprise.LibraVia;
+				PRODUCT_NAME = LibraVia;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		73EBF6644258C120893E685D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		68EF31C67DB32EA8B8277CD5 /* Build configuration list for PBXNativeTarget "LibraVia" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1CA068EC9320FA7467B79492 /* Debug */,
+				04EAAA5E2825E75AD06D2C1C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		76F8DEC3DFE0BDB465198890 /* Build configuration list for PBXProject "JellyfinBooks" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				73EBF6644258C120893E685D /* Debug */,
+				0B0C687DF8B6B8DC790B519C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D2EAE1F9EDD07E6E3804EB48 /* XCRemoteSwiftPackageReference "jellyfin-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/jellyfin/jellyfin-sdk-swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 3.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D1D50749973C227EB7BE9254 /* JellyfinAPI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D2EAE1F9EDD07E6E3804EB48 /* XCRemoteSwiftPackageReference "jellyfin-sdk-swift" */;
+			productName = JellyfinAPI;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 244210E48437B6556980A702 /* Project object */;
+}

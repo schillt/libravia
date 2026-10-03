@@ -1,0 +1,2 @@
+// Get this value from Xcode > Settings > Accounts, or the Signing & Capabilities tab.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID

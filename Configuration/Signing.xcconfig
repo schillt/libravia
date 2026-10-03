@@ -1,0 +1,3 @@
+// Signing identity stays local; builds without signing need no local file.
+// Copy LocalSigning.xcconfig.example to LocalSigning.xcconfig and choose your team.
+#include? "LocalSigning.xcconfig"

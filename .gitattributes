@@ -1,0 +1,5 @@
+# Keep original fixtures binary and preserve upstream license text verbatim.
+Fixtures/*.pdf binary
+Fixtures/*.epub binary
+Fixtures/*.cbz binary
+App/Resources/Licenses/* -whitespace

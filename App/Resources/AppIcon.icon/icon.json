@@ -1,0 +1,93 @@
+{
+  "features" : [
+    "refractivity"
+  ],
+  "fill" : {
+    "automatic-gradient" : "extended-srgb:0.01569,0.17647,0.19608,1.00000"
+  },
+  "groups" : [
+    {
+      "blur-material" : 0.2,
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "PathLight.svg",
+          "name" : "Fine Gold Edge"
+        },
+        {
+          "glass" : true,
+          "image-name" : "Destination.svg",
+          "name" : "Distant Light"
+        }
+      ],
+      "name" : "Warm Path Light",
+      "refractivity" : {
+        "depth" : 0.15,
+        "enabled" : true,
+        "strength" : 0.35
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.15
+      }
+    },
+    {
+      "blur-material" : 0.5,
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "Pages.svg",
+          "name" : "Open Pages"
+        }
+      ],
+      "name" : "Sculpted Glass Pages",
+      "refractivity" : {
+        "depth" : 0.15,
+        "enabled" : true,
+        "strength" : 0.35
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.08
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.4
+      }
+    },
+    {
+      "blur-material" : 0.5,
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "Underpages.svg",
+          "name" : "Lower Page Layer"
+        }
+      ],
+      "name" : "Soft Glass Page Curls",
+      "refractivity" : {
+        "depth" : 0.15,
+        "enabled" : true,
+        "strength" : 0.35
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.1
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.65
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

@@ -1,0 +1,17 @@
+html,body,#reader{margin:0;width:100%;height:100%;overflow:hidden}body{background:#fff}*{box-sizing:border-box}
+#reader{view-transition-name:page}
+::view-transition-old(root),::view-transition-new(root){animation:none}
+::view-transition-group(page){overflow:hidden}
+html[data-page-style="slide"][data-page-turn="next"]::view-transition-old(page){animation:page-out-left 290ms cubic-bezier(.24,.7,.22,1) both}
+html[data-page-style="slide"][data-page-turn="next"]::view-transition-new(page){animation:page-in-right 290ms cubic-bezier(.24,.7,.22,1) both}
+html[data-page-style="slide"][data-page-turn="previous"]::view-transition-old(page){animation:page-out-right 290ms cubic-bezier(.24,.7,.22,1) both}
+html[data-page-style="slide"][data-page-turn="previous"]::view-transition-new(page){animation:page-in-left 290ms cubic-bezier(.24,.7,.22,1) both}
+html[data-page-style="fade"]::view-transition-old(page){animation:page-fade-out 220ms ease-out both}
+html[data-page-style="fade"]::view-transition-new(page){animation:page-fade-in 220ms ease-out both}
+@keyframes page-out-left{to{transform:translateX(-28%) scale(.96);opacity:.65;filter:brightness(.88)}}
+@keyframes page-in-right{from{transform:translateX(100%);box-shadow:-16px 0 30px #0002}to{transform:translateX(0)}}
+@keyframes page-out-right{to{transform:translateX(100%);box-shadow:-16px 0 30px #0002}}
+@keyframes page-in-left{from{transform:translateX(-28%) scale(.96);opacity:.65;filter:brightness(.88)}to{transform:translateX(0)}}
+@keyframes page-fade-out{to{opacity:0}}
+@keyframes page-fade-in{from{opacity:0}}
+@media(prefers-reduced-motion:reduce){::view-transition-old(page),::view-transition-new(page){animation:none!important}}

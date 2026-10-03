@@ -1,0 +1,28 @@
+.DS_Store
+.build/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Local credentials, account settings, and signing artifacts
+Configuration/LocalSigning.xcconfig
+.env
+.env.*
+*.p8
+*.p12
+*.mobileprovision
+*.provisionprofile
+
+# Local build/distribution products and diagnostics
+*.xcarchive/
+*.ipa
+*.pkg
+*.dSYM/
+*.xcresult/
+*.log
+__pycache__/
+*.pyc
+
+# Obsolete local design studies; the shipped icon remains under App/Resources.
+/Design/
