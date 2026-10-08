@@ -88,8 +88,8 @@ struct ReaderView: View {
     @State private var scrubFraction = 0.0
     @State private var controlsActivity = UUID()
     @State private var scrubbing = false
-    @AppStorage("readerKeepTitleVisible") private var keepTitleVisible = false
-    @AppStorage("readerKeepProgressVisible") private var keepProgressVisible = false
+    @AppStorage("readerKeepTitleVisible") private var keepTitleVisible = true
+    @AppStorage("readerKeepProgressVisible") private var keepProgressVisible = true
     @ScaledMetric(relativeTo: .caption) private var headerLineHeight = 18.0
     @ScaledMetric(relativeTo: .caption2) private var progressLineHeight = 16.0
     private var headerGutter: Double { max(52, headerLineHeight * 2 + 8) }
@@ -544,11 +544,6 @@ struct ReaderView: View {
     private var appearance: some View {
         @Bindable var model = model
         return Form {
-            Section("While reading") {
-                Toggle("Keep book title visible", isOn: $keepTitleVisible)
-                Toggle("Keep progress visible", isOn: $keepProgressVisible)
-                Text("Show controls with a tap or click in the center of the page.").font(.caption).foregroundStyle(.secondary)
-            }
             Section("Tap to turn pages") {
                 adjustmentButton(.edgeWidth)
                 Text("Tap the left edge for the previous page, the right edge for the next page, and the center for controls. While scrolling an EPUB or zoomed in, taps show controls.").font(.caption).foregroundStyle(.secondary)
@@ -581,6 +576,11 @@ struct ReaderView: View {
                 TextField("Page number", value: $pageNumber, format: .number)
                 Stepper("Page \(pageNumber)", value: $pageNumber, in: 1...max(1, controller.pageCount))
                 Button("Go to Page") { controller.returnPosition = controller.position; controller.command?("page", pageNumber - 1); panel = nil }.disabled(pageNumber < 1 || pageNumber > controller.pageCount)
+            }
+            Section("While reading") {
+                Toggle("Keep book title visible", isOn: $keepTitleVisible)
+                Toggle("Keep progress visible", isOn: $keepProgressVisible)
+                Text("Show controls with a tap or click in the center of the page.").font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped)
     }
