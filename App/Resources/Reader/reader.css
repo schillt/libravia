@@ -24,3 +24,8 @@ html[data-page-style="fade"]::view-transition-new(page){animation:page-fade-in 2
 /* Decoration lives outside publication frames, preserving EPUB CFI indices. */
 .reader-chapter-break { position:absolute; top:-36px; left:0; right:0; height:28px; display:flex; align-items:center; gap:14px; justify-content:center; font:500 13px -apple-system,sans-serif; color:inherit; opacity:.7; pointer-events:none; }
 .reader-chapter-break::before, .reader-chapter-break::after { content:""; flex:1; height:1px; background:currentColor; opacity:.3; }
+
+/* Keep the last painted page until resize restoration has finished. */
+html[data-page-reflow]::view-transition-group(page),
+html[data-page-reflow]::view-transition-old(page),
+html[data-page-reflow]::view-transition-new(page){animation:none!important}

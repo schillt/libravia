@@ -20,7 +20,10 @@ function setPageChrome(value = {}) {
   reader.style.height = `calc(100% - ${top + bottom}px)`;
   reader.style.maskImage = value.softEdges ? 'linear-gradient(to bottom, transparent, black 8px, black calc(100% - 8px), transparent)' : '';
   reader.style.webkitMaskImage = reader.style.maskImage;
-  header.style.height = top + 'px'; footer.style.height = bottom + 'px';
+  const safeTop = value.enabled ? Math.min(top, Math.max(0, value.safeTop || 0)) : 0;
+  const safeBottom = value.enabled ? Math.min(bottom, Math.max(0, value.safeBottom || 0)) : 0;
+  header.style.top = safeTop + 'px'; footer.style.bottom = safeBottom + 'px';
+  header.style.height = (top - safeTop) + 'px'; footer.style.height = (bottom - safeBottom) + 'px';
   header.style.fontSize = footer.style.fontSize = Math.max(12, value.textSize || 12) + 'px';
   header.hidden = !value.enabled || !value.showChapter;
   footer.hidden = !value.enabled || !value.showProgress;
@@ -235,6 +238,7 @@ function queueLayout(p, resize = false) {
     await precedingTurn.catch(() => {});
     restoring = true;
     try {
+      const applyLayout = async () => {
       if (previewAnchor) {
         const anchor = previewAnchor;
         await withPaginationTimeout(rendition.display(anchor));
@@ -259,6 +263,19 @@ function queueLayout(p, resize = false) {
         const flowChanged = p ? preferences(p) : false;
         if (anchor && relayout && !flowChanged) { await withPaginationTimeout(rendition.display(anchor)); }
       }
+      };
+      if (pendingResize && !nativePageTurns && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches && typeof document.startViewTransition === 'function') {
+        activeTransition?.skipTransition();
+        delete document.documentElement.dataset.pageTurn;
+        delete document.documentElement.dataset.pageStyle;
+        document.documentElement.dataset.pageReflow = 'true';
+        const transition = document.startViewTransition(async () => { await applyLayout(); await nextPaint(); }); activeTransition = transition;
+        transition.finished.catch(() => {}).finally(() => {
+          if (activeTransition !== transition) return;
+          activeTransition = null; delete document.documentElement.dataset.pageReflow;
+        });
+        await withPaginationTimeout(transition.updateCallbackDone);
+      } else { await applyLayout(); }
     } catch (_) { send('error'); }
     finally {
       restoring = false; layoutTask = undefined;

@@ -353,5 +353,34 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.deepEqual(operations,['turn','resize:saved'],'Next turn waits for internal resize redisplay');
  finishResize();await resizing;await after;
  assert.deepEqual(operations,['turn','resize:saved','restored','turn'],'Resize restoration and turns complete in order without deadlock');
+ // Hardware insets belong outside the small chapter/progress bands.
+ const chromeNodes={reader:{style:{}},'page-chapter':{style:{}},'page-progress':{style:{}}};
+ const previousElementLookup=context.document.getElementById;
+ context.document.getElementById=id=>chromeNodes[id];
+ vm.runInContext('setPageChrome({enabled:true,showChapter:true,showProgress:true,top:91,bottom:88,safeTop:47,safeBottom:34,textSize:12})',context);
+ assert.equal(chromeNodes['page-chapter'].style.top,'47px');
+ assert.equal(chromeNodes['page-chapter'].style.height,'44px','Chapter band excludes the notch reservation');
+ assert.equal(chromeNodes['page-progress'].style.bottom,'34px');
+ assert.equal(chromeNodes['page-progress'].style.height,'54px','Progress band sits above the home indicator');
+ context.document.getElementById=previousElementLookup;
+ // A resize snapshot must cover frame replacement until restoration/paint completes.
+ const snapshots=[];
+ orderContext.requestAnimationFrame=callback=>callback();
+ orderContext.document.startViewTransition=callback=>{
+   snapshots.push('capture');
+   const updateCallbackDone=Promise.resolve().then(callback);
+   return {updateCallbackDone,finished:updateCallbackDone,skipTransition(){}};
+ };
+ orderContext.mock.q.enqueue=async()=>{};
+ vm.runInContext('pendingViewport={width:720,height:700}',orderContext);
+ await vm.runInContext('queueLayout(undefined,true)',orderContext);
+ await tick();
+ assert.deepEqual(snapshots,['capture'],'Mac resize captures the old painted page');
+ assert.equal(vm.runInContext('restoring',orderContext),false,'Snapshot resize releases restoration');
+ assert.equal(orderContext.document.documentElement.dataset.pageReflow,undefined,'Completed reflow clears snapshot styling');
+ orderContext.window.matchMedia=()=>({matches:true});
+ vm.runInContext('pendingViewport={width:740,height:700}',orderContext);
+ await vm.runInContext('queueLayout(undefined,true)',orderContext);
+ assert.equal(snapshots.length,1,'Reduce Motion uses ordinary layout without a transition snapshot');
  console.log('Reader bridge: cancellation, ownership, layout, resize, continuous-flow opening and mode restoration checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1});

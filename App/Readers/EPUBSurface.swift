@@ -16,6 +16,8 @@ struct ReaderPageChrome: Codable, Equatable {
     var showProgress = true
     var top: Double = 0
     var bottom: Double = 0
+    var safeTop: Double = 0
+    var safeBottom: Double = 0
     var textSize: Double = 12
     var softEdges = false
 }
@@ -949,6 +951,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         guard let page = viewController as? ReaderCurlPage else { return nil }; return neighbour(page.offset + 1)
     }
     func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) {
+        coordinator?.controller.controlsVisible = false
         coordinator?.curlTurning = true
     }
     func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool,
@@ -981,6 +984,7 @@ struct EPUBSurface: EPUBViewRepresentable {
     }
     func animateCurl(_ direction: String) -> Bool {
         guard let curl, coordinator?.curlTurning == false, let next = neighbour(direction == "next" ? 1 : -1) else { return false }
+        coordinator?.controller.controlsVisible = false
         coordinator?.curlTurning = true
         curl.setViewControllers([next], direction: direction == "next" ? .forward : .reverse, animated: true) { [weak self, weak next] completed in
             guard let self, let next, self.curl === curl, self.coordinator?.curlTurning == true else { return }

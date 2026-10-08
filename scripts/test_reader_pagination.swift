@@ -66,12 +66,12 @@ import WebKit
                     assert(layoutPages.length>before,'Larger type recounts pages');
                     const oldCount=layoutPages.length;
                     resizeViewport({width:500,height:700});
-                    await pause(300);await paginationTask;
+                    await layoutTask;await pause(300);await paginationTask;
                     assert(layoutPages.length<oldCount,'Wider viewport recounts pages');
                     const anchor=current;
                     await requestPagination();
                     assert(current===anchor,'Counting cannot move the live reader');
-                    resizeViewport({width:900,height:700});await pause(300);await paginationTask;
+                    resizeViewport({width:900,height:700});await layoutTask;await pause(300);await paginationTask;
                     await window.readerCommand({name:'layoutPage',value:0});await pause(200);
                     assert(rendition.manager.layout.divisor===2,'Wide reader uses a two-column spread');
                     assert(page()===1,'First wide spread');

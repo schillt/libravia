@@ -97,7 +97,7 @@ struct ReaderView: View {
     @AppStorage("readerKeepProgressVisible") private var keepProgressVisible = true
     @ScaledMetric(relativeTo: .caption) private var headerLineHeight = 18.0
     @ScaledMetric(relativeTo: .caption2) private var progressLineHeight = 16.0
-    private var headerGutter: Double { isDesktop ? max(44, headerLineHeight * 2 + 8) : max(52, headerLineHeight * 2 + 8) }
+    private var headerGutter: Double { isDesktop ? max(28, headerLineHeight + 8) : max(44, headerLineHeight * 2 + 4) }
     private var footerGutter: Double { 44 + progressLineHeight }
     private var isDesktop: Bool {
         #if os(macOS)
@@ -111,11 +111,12 @@ struct ReaderView: View {
     private var pageContainsInfo: Bool { prepared.book.format == .epub && !model.preferences.scrolling }
     private func pageChrome(safeInsets: EdgeInsets) -> ReaderPageChrome {
         ReaderPageChrome(enabled: pageContainsInfo, showChapter: keepTitleVisible, showProgress: keepProgressVisible,
-                         top: headerGutter + safeInsets.top, bottom: isDesktop ? 28 : footerGutter + safeInsets.bottom,
+                         top: headerGutter + safeInsets.top, bottom: isDesktop ? 20 : max(54, progressLineHeight + 32) + safeInsets.bottom,
+                         safeTop: safeInsets.top, safeBottom: safeInsets.bottom,
                          textSize: max(12, progressLineHeight - 4),
                          softEdges: !isDesktop && model.preferences.pageTransition == "curl" && !reduceTransparency && contrast != .increased)
     }
-    private var readerControlHeight: Double { isDesktop ? 36 : 52 }
+    private var readerControlHeight: Double { isDesktop ? 36 : 44 }
     private func closeReader() {
         #if os(macOS)
         if let closeReaderWindow { closeReaderWindow(); return }
@@ -134,7 +135,7 @@ struct ReaderView: View {
           let pageInsets = !isDesktop && pageContainsInfo ? controller.viewportInsets : EdgeInsets()
           let usesSidebar = (isDesktop || geometry.size.width >= 900) && !dynamicTypeSize.isAccessibilitySize
           HStack(spacing: 0) {
-          NavigationStack {
+          readerContainer {
             readerSurface(chrome: pageChrome(safeInsets: pageInsets))
                 #if os(macOS)
                 .background(MacReaderInput(chromeVisible: readerChromeVisible, canTurn: { controller.ready && showsPageTurnButtons },
@@ -153,7 +154,7 @@ struct ReaderView: View {
                 // Keep the document viewport identical when chrome appears or hides.
                 // Side panels and text-size changes deliberately reflow; visibility does not.
                 .padding(.top, pageContainsInfo ? 0 : headerGutter)
-                .padding(.bottom, pageContainsInfo ? (isDesktop ? 72 : 0) : footerGutter)
+                .padding(.bottom, pageContainsInfo ? (isDesktop ? 52 : 0) : footerGutter)
                 .background(readerBackground.ignoresSafeArea())
                 .overlay {
                     if searchVisible && !isDesktop {
@@ -264,7 +265,9 @@ struct ReaderView: View {
             }
           }
           #if os(iOS)
-          .statusBarHidden(pageContainsInfo && !controller.controlsVisible && !voiceOver)
+          .frame(width: geometry.size.width, height: geometry.size.height)
+          .ignoresSafeArea(.container, edges: pageContainsInfo ? .vertical : [])
+          .statusBarHidden(pageContainsInfo && (!controller.controlsVisible || model.preferences.pageTransition == "curl") && !voiceOver)
           #endif
           #if os(macOS)
           .frame(minWidth: 0, maxWidth: .infinity)
@@ -279,6 +282,8 @@ struct ReaderView: View {
                       if searchVisible || panel != nil { closeSearch(); panel = nil }
                       else { navigationTab = 0; panel = .contents }
                   }
+                  .foregroundStyle(searchVisible || panel != nil ? Color.accentColor : readerForeground)
+                  .accessibilityValue(searchVisible || panel != nil ? "Sidebar open" : "Sidebar closed")
               }
           }
           #endif
@@ -605,6 +610,15 @@ struct ReaderView: View {
     private var readerSecondaryForeground: Color {
         darkReader ? .white.opacity(0.7) : .secondary
     }
+    @ViewBuilder private func readerContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        #if os(macOS)
+        NavigationStack { content() }
+        #else
+        // The full-screen reader supplies its own controls. A navigation host
+        // reintroduces system safe areas before the page's own reservations.
+        ZStack { content() }
+        #endif
+    }
     private func readerSurface(chrome: ReaderPageChrome) -> some View {
         ZStack {
             switch prepared.book.format {
@@ -795,8 +809,6 @@ struct ReaderView: View {
                 Text(searchVisible ? "Search" : panel == .appearance ? "Appearance" : "Book navigation")
                     .font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer()
-                Button { closeSearch(); panel = nil } label: { Image(systemName: "xmark") }
-                    .buttonStyle(.plain).accessibilityLabel("Close reader sidebar")
             }.frame(width: 260, height: 44).padding(.horizontal, 16)
             MacReaderSidebarTabs(labels: ReaderCapabilities(format: prepared.book.format).textSearch
                                  ? ["Contents", "Appearance", "Search"] : ["Contents", "Appearance"],
