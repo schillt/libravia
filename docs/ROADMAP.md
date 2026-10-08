@@ -26,9 +26,11 @@ Libraries remain separate by source. **On My Device** is a separate local librar
 | 0.9 | Release candidate beta | Freeze feature scope; exercise provider/format/platform compatibility; triage beta defects. | Complete daily-use journeys and no unresolved release-blocking defects. |
 | 1.0 | Trusted release | Freeze the exact candidate; validate distribution artifacts, privacy, licenses, documentation, and support. | Every product promise has acceptance evidence; no known reading-data-loss defect or broken core journey remains. |
 
-Small patches can ship within milestones. Version numbers indicate accepted outcomes, not merely merged feature lists. Each milestone has separate implementation issues and an acceptance gate issue in GitHub.
+Small patches can ship within milestones. UI and interaction improvements are ongoing release work, including releases without a dedicated design milestone. Track specific feedback as issues and validate accessibility, platform behavior, and reading-location stability alongside each change. Version numbers indicate accepted outcomes, not merely merged feature lists. Each milestone has separate implementation issues and an acceptance gate issue in GitHub.
 
 ## Native reading standards
+
+In paginated readers, tap the left edge for the previous page, the right edge for the next page, and the center to toggle controls. Share a persistent edge-width setting across EPUB, PDF, and CBZ; preserve selection, links, and zoom gestures. Vertical EPUB scrolling keeps taps for controls. Track this in issue #43.
 
 Default to quiet, content-first reading. Reveal controls predictably on demand and optionally keep title/progress visible. Persist appearance settings and prevent controls from covering content or repaginating the book on every visibility change.
 
@@ -38,7 +40,7 @@ Default to quiet, content-first reading. Reveal controls predictably on demand a
 | iPad | Comfortable portrait/landscape layouts, adaptive side panels, annotation space, and keyboard support. |
 | Mac | Native menus/shortcuts, pointer-friendly selection, resizable windows, sidebars, and reliable focus. |
 
-Stable cover geometry, readable typography, coherent spacing, accessible contrast, and restrained motion apply throughout the roadmap. Establish representative opening, page-turn, search, and selection baselines in 0.2; track regressions and set measured performance targets for 0.8.
+Stable cover geometry, readable typography, coherent spacing, accessible contrast, and restrained motion apply throughout the roadmap. Catalog grid/shelf cards reserve two title lines and one metadata line in equal-width columns. Covers use a 2:3 container with fitted artwork, preserving source proportions; mixed artwork may have space around it. Full titles remain available in details and accessibility labels. Compact list covers scale together with interface text. Establish representative opening, page-turn, search, and selection baselines in 0.2; track regressions and set measured performance targets for 0.8.
 
 ## Provider commitment
 

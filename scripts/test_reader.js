@@ -28,6 +28,26 @@ assert.ok(excerpt.length > 200 && excerpt.length < 340, 'Search provides bounded
 const tick = async()=>{ await Promise.resolve(); await Promise.resolve(); };
 const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();return callback();};
 (async()=>{
+ vm.runInContext('viewportSize={width:1000,height:700};latestPreferences={fontSize:20,lineHeight:1.6,margin:24}',context);
+ assert.ok(vm.runInContext('reflowScale({width:660,height:700}).x',context)<1,'Narrowing compresses paper');
+ assert.ok(vm.runInContext('reflowScale({width:1200,height:700}).x',context)>1,'Widening stretches paper');
+ assert.ok(vm.runInContext('reflowScale(undefined,{fontSize:24}).x',context)>1,'Larger text stretches into place');
+ assert.ok(vm.runInContext('reflowScale(undefined,{lineHeight:1.2}).y',context)<1,'Tighter spacing compacts vertically');
+ vm.runInContext('viewportSize=undefined;latestPreferences=undefined',context);
+ const originalSnapshot=context.renderSnapshot, snapshotJobs=[];
+ let releaseSnapshot;
+ context.renderSnapshot=value=>{
+   snapshotJobs.push(value.request);
+   return value.request==='busy' ? new Promise(resolve=>{releaseSnapshot=resolve;}) : Promise.resolve();
+ };
+ const busy=context.window.readerCommand({name:'snapshot',value:{request:'busy'}});
+ const obsolete=context.window.readerCommand({name:'snapshot',value:{request:'obsolete'}});
+ const newest=context.window.readerCommand({name:'snapshot',value:{request:'newest'}});
+ assert.deepEqual(snapshotJobs,['busy'],'Only one auxiliary render is active');
+ await obsolete;
+ releaseSnapshot();await Promise.all([busy,newest]);
+ assert.deepEqual(snapshotJobs,['busy','newest'],'Only latest waiting preview runs; obsolete work is discarded');
+ context.renderSnapshot=originalSnapshot;
  let turns = 0;
  context.mockRendition.next=async()=>turns++;
  context.mockRendition.prev=async()=>turns--;
@@ -40,7 +60,8 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  const transitions=[];
  context.document.startViewTransition=update=>{
    transitions.push({direction:context.document.documentElement.dataset.pageTurn,style:context.document.documentElement.dataset.pageStyle});
-   return {finished:Promise.resolve().then(update)};
+   const updateCallbackDone=Promise.resolve().then(update);
+   return {updateCallbackDone,finished:updateCallbackDone,skipTransition(){}};
  };
  context.window.matchMedia=()=>({matches:false});
  vm.runInContext("pageTransition='slide'",context);
@@ -48,6 +69,7 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.equal(turns,1);
  assert.equal(transitions.length,1,'One transition snapshots outgoing and incoming pages');
  assert.equal(transitions[0].direction,'next');
+ await tick();
  assert.equal(context.document.documentElement.dataset.pageTurn,undefined,'Transition state is removed after animation');
  vm.runInContext('nativePageTurns=true',context);
  vm.runInContext('ready=true',context);
@@ -57,6 +79,18 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.equal(transitions.length,1,'Native mobile turns skip the WebKit page transition');
  assert.equal(messages.at(-1).kind,'turned','Native animation starts only after the next page renders');
  assert.equal(messages.at(-1).direction,'next');
+ const ordered=[];
+ let releaseTurn;
+ context.mockRendition.next=()=>new Promise(resolve=>{releaseTurn=()=>{turns++;ordered.push('next');resolve();};});
+ const rapidA=context.window.readerCommand({name:'nativeTurn',value:{direction:'next',request:'rapid-a'}});
+ const rapidB=context.window.readerCommand({name:'nativeTurn',value:{direction:'previous',request:'rapid-b'}});
+ await tick();await tick();
+ assert.deepEqual(ordered,[],'Second input waits for rendering, not native decoration');
+ releaseTurn();await Promise.all([rapidA,rapidB]);
+ assert.deepEqual(messages.filter(m=>m.request==='rapid-a'||m.request==='rapid-b').map(m=>m.request),['rapid-a','rapid-b'],'Rapid requests are acknowledged in order with their own identity');
+ assert.equal(turns,2,'Rapid forward then backward inputs both execute');
+ assert.equal(transitions.length,1,'Rapid native input does not wait for a browser animation');
+ context.mockRendition.next=async()=>turns++;
  await context.window.readerCommand({name:'gesture',value:{action:'previous',x:30,y:40}});
  assert.equal(messages.at(-1).kind,'swipe','Native swipe requests the same animated turn as the arrow');
  assert.equal(messages.at(-1).direction,'previous');
@@ -85,6 +119,38 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  await context.window.readerCommand({name:'clearSelection'});
  assert.equal(cleared,3,'Native animation completion can release selection created after relocation');
  context.document.querySelectorAll=()=>[];
+ context.window.matchMedia=()=>({matches:true});
+ // Tap zones use the whole reader viewport and the native animation route.
+ context.document.getElementById=()=>({getBoundingClientRect:()=>({left:20,top:0,width:1000,height:700})});
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:50,y:40}});
+ assert.equal(messages.at(-1).direction,'previous');
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:1000,y:40}});
+ assert.equal(messages.at(-1).direction,'next');
+ assert.equal(turns,3,'Native edge taps request one animation without turning twice');
+ const edgeMessageCount=messages.length;
+ context.document.querySelectorAll=()=>[{getBoundingClientRect:()=>({left:20,top:0,right:1020,bottom:100}),contentWindow:{getSelection:()=>({toString:()=>"selected",removeAllRanges:()=>cleared++})}}];
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:1000,y:40}});
+ assert.equal(messages.length,edgeMessageCount,'Selection dismissal does not turn or toggle from an edge');
+ context.document.querySelectorAll=()=>[{getBoundingClientRect:()=>({left:20,top:0,right:1020,bottom:100}),contentWindow:{getSelection:()=>({toString:()=>""})},contentDocument:{elementFromPoint:()=>({closest:()=>({})})}}];
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:1000,y:40}});
+ assert.equal(messages.length,edgeMessageCount,'An interactive link in an edge zone keeps its original action');
+ context.document.querySelectorAll=()=>[];
+ for(const x of [220,520,820]) {
+   await context.window.readerCommand({name:'gesture',value:{action:'tap',x,y:40}});
+   assert.equal(messages.at(-1).kind,'toggleControls','Center and boundaries reveal controls');
+ }
+ vm.runInContext('scrolling=true',context);
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:50,y:40}});
+ assert.equal(messages.at(-1).kind,'toggleControls','Vertical reading keeps taps for controls');
+ vm.runInContext('scrolling=false;pageTapZoneFraction=0.3',context);
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:270,y:40}});
+ assert.equal(messages.at(-1).direction,'previous','Wider edge setting applies immediately');
+ vm.runInContext('pageTapZoneFraction=0.2;nativePageTurns=false',context);
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:50,y:40}});
+ assert.equal(turns,2,'Desktop edge tap turns exactly one page');
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:1000,y:40}});
+ assert.equal(turns,3);
+ delete context.document.getElementById;
  vm.runInContext('nativePageTurns=false',context);
  context.window.matchMedia=()=>({matches:true});
  await context.window.readerCommand({name:'previous'});
@@ -95,11 +161,14 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  vm.runInContext('reportPosition(mockRendition.location)',context);
  assert.equal(messages.at(-1).chapterPage,3);
  assert.equal(messages.at(-1).chapterPageCount,10);
- assert.equal(messages.at(-1).bookPageEstimate,20,'Book pages are estimated from observed rendered pages per generated location');
- vm.runInContext('sectionLocationCounts = new Map([[1, 1]]); observedSectionPages.clear()',context);
- context.mockRendition.location={start:{cfi:'short-cfi',href:'short.xhtml',displayed:{page:1,total:1}}};
+ assert.equal(messages.at(-1).bookPageCount,0,'No invented total before layout counting completes');
+ vm.runInContext("layoutPages = [{sectionIndex:0,localPage:1},{sectionIndex:0,localPage:2},{sectionIndex:0,localPage:3},{sectionIndex:1,localPage:1}]; navigationTitles=new Map([[0,'Chapter 7']])",context);
+ context.mockRendition.location.start.index=0;
  vm.runInContext('reportPosition(mockRendition.location)',context);
- assert.equal(messages.at(-1).bookPageEstimate,6,'A one-page opening section still provides a book page estimate');
+ assert.equal(messages.at(-1).bookPage,3,'Book page is the actual rendered page, not a character percentage');
+ assert.equal(messages.at(-1).bookPageCount,4);
+ assert.equal(messages.at(-1).chapterTitle,'Chapter 7','Contents title is independent of spine ordinal');
+ vm.runInContext('layoutPages=[]',context);
  context.mockRendition.views=()=>[{section}];
  assert.equal(vm.runInContext('sectionIsDisplayed(mockBook.spine.spineItems[0])',context),true,'Displayed EPUB.js views are an array and must not be unloaded');
  context.mockRendition.views=()=>({displayed:()=>[]});
@@ -139,34 +208,36 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.equal(unloaded,2,'Preloaded sections must remain loaded');
  assert.equal(messages.filter(m=>m.kind==='results').length,1);
  await context.window.readerCommand({name:'preferences',value:{theme:'light',fontSize:18}});
+ const firstPreviewTimer = [...timers.keys()][0];
  await context.window.readerCommand({name:'preferences',value:{theme:'dark',fontSize:22}});
+ assert.equal([...timers.keys()][0],firstPreviewTimer,'Sustained slider edits must not postpone live preview');
  assert.equal(timers.size,1,'Rapid appearance edits must coalesce');
  vm.runInContext('current="navigated"',context);
- await fireTimer();
+ await fireTimer(); await vm.runInContext('layoutTask',context);
  assert.deepEqual(displays,['navigated'],'Capture exact CFI when layout applies, after pending navigation');
  let finishDisplay;
  context.mockRendition.display=cfi=>{displays.push(cfi);return new Promise(r=>finishDisplay=r);};
- const first=vm.runInContext('queueLayout({theme:"light"})',context);
+ const first=vm.runInContext('queueLayout({theme:"light",fontSize:24})',context);
  await tick();
- const second=vm.runInContext('queueLayout({theme:"dark"}); queueLayout(undefined,true)',context);
+ const second=vm.runInContext('queueLayout({theme:"dark",fontSize:26}); queueLayout(undefined,true)',context);
  assert.equal(displays.length,2,'Overlapping layout must wait');
  assert.equal(vm.runInContext('restoring',context),true);
- finishDisplay(); await tick();
+ finishDisplay(); await tick(); await tick(); await tick();
  assert.equal(displays.length,3,'Latest preference and resize applied after first restoration');
  assert.equal(vm.runInContext('restoring',context),true,'Suppression spans queued restoration');
  finishDisplay(); await first; await second;
  assert.equal(vm.runInContext('restoring',context),false);
  context.mockRendition.display=async()=>{throw new Error('fixture');};
- await vm.runInContext('queueLayout({theme:"light"})',context);
+ await vm.runInContext('queueLayout({theme:"light",fontSize:28})',context);
  assert.equal(messages.filter(m=>m.kind==='error').length,1,'Asynchronous layout error handled');
  assert.equal(vm.runInContext('restoring',context),false,'Failed layout releases suppression');
  context.mockRendition.location={start:{cfi:'anchor',href:'chapter.xhtml',displayed:{page:2,total:10}}};
- vm.runInContext('nativePageTurns=true',context);
+ vm.runInContext('nativePageTurns=false',context);
  context.mockRendition.next=async()=>{turns++;context.mockRendition.location.start.cfi='previewed';};
  context.mockRendition.display=async cfi=>{context.mockRendition.location.start.cfi=cfi;};
  const savedPositions=messages.filter(m=>m.kind==='position').length;
  await context.window.readerCommand({name:'previewTurn',value:'next'});
- assert.equal(messages.at(-1).kind,'previewReady','Interactive turn waits for the incoming page');
+ assert.equal(messages.at(-1).kind,'previewReady','Mac provisional turn reports after the incoming page without a decorative transition');
  assert.equal(context.window.readerCanTurn(30,40),false,'A second swipe cannot interrupt a preview');
  assert.equal(messages.filter(m=>m.kind==='position').length,savedPositions,'Provisional page is not persisted');
  await context.window.readerCommand({name:'cancelTurn'});
@@ -201,7 +272,9 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  // Unlike mouse input, the software keyboard really changes the viewport.
  // Search freezes the hidden EPUB box through all intermediate sizes.
  const readerElement={style:{}};
- context.document.getElementById=()=>readerElement;
+ const chromeHeader={style:{}}, chromeFooter={style:{}};
+ context.document.getElementById=id=>id==='reader'?readerElement:id==='page-chapter'?chromeHeader:chromeFooter;
+ vm.runInContext('setPageChrome({enabled:true,top:52,bottom:60,showChapter:true,showProgress:true})', context);
  for (let cycle=0;cycle<3;cycle++) {
    await context.window.readerCommand({name:'searchPresentation',value:true});
    assert.equal(readerElement.style.width,'375px');
@@ -211,16 +284,137 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
    await context.window.readerCommand({name:'cancelSearch'});
    assert.equal(readerElement.style.height,'700px','Cancelling text search does not release the layout before keyboard dismissal');
    await context.window.readerCommand({name:'searchPresentation',value:false});
-   assert.equal(readerElement.style.height,'','Keyboard did-hide releases the fixed box');
+   assert.equal(readerElement.style.height,'calc(100% - 112px)','Closing search restores chapter and progress insets');
+   assert.equal(messages.at(-1).kind,'readerRevealed','Search dismissal explicitly rewarms native page-turn previews after layout and paint');
    vm.runInContext('resizeViewport({width:375,height:700})',context);
  }
  assert.equal(resized.length,0,'Repeated physical-keyboard cycles do not resize');
  assert.equal(displays.length,displaysBeforeKeyboard,'Keyboard cycles do not redisplay');
  assert.equal(vm.runInContext('current',context),positionBeforeKeyboard,'Keyboard cycles preserve exact location');
- vm.runInContext('resizeViewport({width:700,height:375}); resizeViewport({width:700,height:375})',context);
+ vm.runInContext('resizeViewport({width:680,height:390}); resizeViewport({width:700,height:375}); resizeViewport({width:700,height:375})',context);
+ await vm.runInContext('layoutTask',context);
  assert.deepEqual(resized,[{width:700,height:375}],'A real rotation resizes the rendition exactly once');
  assert.equal(displays.length,displaysBeforeKeyboard,'Leave resize location restoration to EPUB.js instead of displaying twice');
  vm.runInContext('resizeViewport({width:0,height:0})',context);
  assert.equal(resized.length,1,'Ignore transient empty layout dimensions');
- console.log('Reader bridge: cancellation, ownership, stale errors, coalescing, navigation anchor, serialized layout and resize checks passed');
+ // Exercise the production open command, not a separate copy of its options.
+ // Both initial modes must retain a manager that can append adjacent chapters.
+ for (const initiallyScrolling of [false, true]) {
+   const flowMessages = [], flowTimers = new Map(), flows = [], anchors = [];
+   let options;
+   const location = {start:{cfi:'saved-anchor',href:'chapter.xhtml',displayed:{page:1,total:4}}};
+   const renderer = {
+     location, themes:{default(){}}, hooks:{content:{register(){}}}, on(){},
+     flow:value=>flows.push(value),
+     display:async target=>{ if (target) { anchors.push(target); location.start.cfi=target; } },
+   };
+   const publication = {
+     ready:Promise.resolve(), on(){},
+     renderTo:(_element,value)=>{ options=value; return renderer; },
+     spine:{get:()=>({index:0}),hooks:{content:{register(){}}}},
+     locations:{generate:async()=>{},length:()=>0,cfiFromPercentage:()=> 'fraction-anchor',percentageFromCfi:()=>0.25},
+     loaded:{navigation:Promise.resolve({toc:[]})},
+   };
+   const flowContext = {
+     window:{webkit:{messageHandlers:{reader:{postMessage:m=>flowMessages.push(m)}}}},
+     document:{documentElement:{dataset:{}},body:{style:{}},getElementById:()=>({style:{},getBoundingClientRect:()=>({left:0,top:0,width:375,height:700})})},
+     ePub:()=>publication,
+     ResizeObserver:class {observe(){} disconnect(){}},
+     setTimeout:callback=>{flowTimers.set(1,callback);return 1;},clearTimeout:id=>flowTimers.delete(id),
+   };
+   vm.createContext(flowContext);
+   vm.runInContext(fs.readFileSync('App/Resources/Reader/reader.js','utf8'),flowContext);
+   await flowContext.window.readerCommand({name:'open',value:{url:'fixture.opf',cfi:'saved-anchor',preferences:{scrolling:initiallyScrolling}}});
+   assert.equal(options.manager,'continuous','Opening uses adjacent-chapter rendering in either mode');
+   assert.equal(options.flow,initiallyScrolling?'scrolled-continuous':'paginated');
+   assert.equal(flows.length,0,'Initial setup does not clear the already configured rendition');
+   assert.equal(flowMessages.at(-1).kind,'ready');
+   assert.equal(anchors.at(-1),'saved-anchor','Opening restores the saved exact location');
+   for (const scrolling of [!initiallyScrolling, initiallyScrolling]) {
+     await flowContext.window.readerCommand({name:'preferences',value:{scrolling}});
+     const apply=[...flowTimers.values()].at(-1);flowTimers.clear();await apply();await vm.runInContext("layoutTask",flowContext);
+     assert.equal(flows.at(-1),scrolling?'scrolled-continuous':'paginated','Mode changes retain continuous chapter flow');
+     assert.equal(anchors.at(-1),'saved-anchor','Mode changes restore the exact CFI');
+     assert.equal(flowMessages.filter(m=>m.kind==='error').length,0);
+   }
+ }
+ // Inspector reflow must wait for an in-flight turn, and the next turn must
+ // wait for EPUB.js's resize redisplay queue instead of touching cleared views.
+ const orderContext={window:{webkit:{messageHandlers:{reader:{postMessage(){}}}}},
+ document:{documentElement:{dataset:{}}},setTimeout:()=>1,clearTimeout(){}};
+ vm.createContext(orderContext);
+ vm.runInContext(fs.readFileSync('App/Resources/Reader/reader.js','utf8'),orderContext);
+ const operations=[]; let finishTurn,finishResize;
+ orderContext.mock={location:{start:{cfi:'saved'}},
+ next:()=>{operations.push('turn');return operations.filter(x=>x==='turn').length===1?new Promise(r=>finishTurn=r):Promise.resolve();},
+ resize:(w,h,cfi)=>operations.push('resize:'+cfi),
+ q:{enqueue:()=>new Promise(r=>finishResize=r)},reportLocation:async()=>operations.push('restored')};
+ vm.runInContext("rendition=mock;current='saved';viewportSize={width:1000,height:700};pendingViewport={width:660,height:700};pageTransition='instant';requestPagination=()=>{};updatePageInformation=()=>{};invalidatePagination=()=>{};clearChapterSelections=()=>{};",orderContext);
+ const before=vm.runInContext("turn('next')",orderContext);
+ const resizing=vm.runInContext('queueLayout(undefined,true)',orderContext);
+ const after=vm.runInContext("turn('next')",orderContext);
+ for(let i=0;i<8;i++)await tick();
+ assert.deepEqual(operations,['turn'],'Resize cannot clear views during an active turn');
+ finishTurn();await before;for(let i=0;i<8;i++)await tick();
+ assert.deepEqual(operations,['turn','resize:saved'],'Next turn waits for internal resize redisplay');
+ finishResize();await resizing;await after;
+ assert.deepEqual(operations,['turn','resize:saved','restored','turn'],'Resize restoration and turns complete in order without deadlock');
+ // Hardware insets belong outside the small chapter/progress bands.
+ const chromeNodes={reader:{style:{}},'page-chapter':{style:{}},'page-progress':{style:{}}};
+ const previousElementLookup=context.document.getElementById;
+ context.document.getElementById=id=>chromeNodes[id];
+ vm.runInContext('setPageChrome({enabled:true,showChapter:true,showProgress:true,top:91,bottom:88,safeTop:47,safeBottom:34,textSize:12})',context);
+ assert.equal(chromeNodes['page-chapter'].style.top,'47px');
+ assert.equal(chromeNodes['page-chapter'].style.height,'44px','Chapter band excludes the notch reservation');
+ assert.equal(chromeNodes['page-progress'].style.bottom,'34px');
+ assert.equal(chromeNodes['page-progress'].style.height,'54px','Progress band sits above the home indicator');
+ context.document.getElementById=previousElementLookup;
+ // A resize snapshot must cover frame replacement until restoration/paint completes.
+ const snapshots=[];
+ orderContext.requestAnimationFrame=callback=>callback();
+ orderContext.document.startViewTransition=callback=>{
+   snapshots.push('capture');
+   const updateCallbackDone=Promise.resolve().then(callback);
+   return {updateCallbackDone,finished:updateCallbackDone,skipTransition(){}};
+ };
+ orderContext.mock.q.enqueue=async()=>{};
+ vm.runInContext('pendingViewport={width:720,height:700}',orderContext);
+ await vm.runInContext('queueLayout(undefined,true)',orderContext);
+ await tick();
+ assert.deepEqual(snapshots,['capture'],'Mac resize captures the old painted page');
+ assert.equal(vm.runInContext('restoring',orderContext),false,'Snapshot resize releases restoration');
+ assert.equal(orderContext.document.documentElement.dataset.pageReflow,undefined,'Completed reflow clears snapshot styling');
+ orderContext.window.matchMedia=()=>({matches:true});
+ vm.runInContext('pendingViewport={width:740,height:700}',orderContext);
+ await vm.runInContext('queueLayout(undefined,true)',orderContext);
+ assert.equal(snapshots.length,1,'Reduce Motion uses ordinary layout without a transition snapshot');
+ orderContext.window.matchMedia=()=>({matches:false});
+ let finishSnapshot;
+ orderContext.document.startViewTransition=callback=>{
+   const updateCallbackDone=Promise.resolve().then(callback);
+   return {updateCallbackDone,finished:new Promise(resolve=>finishSnapshot=resolve),skipTransition(){}};
+ };
+ vm.runInContext('pendingViewport={width:760,height:700}',orderContext);
+ await vm.runInContext('queueLayout(undefined,true)',orderContext);
+ vm.runInContext('activeTransition={skipTransition(){}}',orderContext);
+ finishSnapshot(); await tick();
+ assert.equal(orderContext.document.documentElement.dataset.pageReflow,undefined,'Interrupted snapshot cannot disable subsequent page-turn animation');
+
+ // Obsolete counters must finish before a new publication is allocated.
+ let releaseCounter, allocations=0;
+ const counterContext={window:{webkit:{messageHandlers:{reader:{postMessage(){}}}}},
+   document:{documentElement:{dataset:{}}},setTimeout:context.setTimeout,clearTimeout:context.clearTimeout};
+ counterContext.ePub=()=>{allocations++;return {ready:Promise.reject(Error('fixture')),destroy(){}};};
+ counterContext.ePub.Rendition=function(){};
+ counterContext.previousCounter=new Promise(resolve=>releaseCounter=resolve);
+ vm.createContext(counterContext);
+ vm.runInContext(fs.readFileSync('App/Resources/Reader/reader.js','utf8'),counterContext);
+ vm.runInContext('ready=true;publicationURL="fixture";viewportSize={width:1000,height:700};paginationTask=previousCounter;',counterContext);
+ const obsoleteCount=vm.runInContext('requestPagination()',counterContext);
+ const finalCount=vm.runInContext('viewportSize={width:660,height:700};requestPagination()',counterContext);
+ await tick();assert.equal(allocations,0,'Old counter owns resources until cleanup completes');
+ releaseCounter();await Promise.all([obsoleteCount,finalCount]);
+ assert.equal(allocations,1,'Only newest queued page counter allocates a publication');
+
+ console.log('Reader bridge: cancellation, ownership, layout, resize, continuous-flow opening and mode restoration checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -1,5 +1,10 @@
-html,body,#reader{margin:0;width:100%;height:100%;overflow:hidden}body{background:#fff}*{box-sizing:border-box}
-#reader{view-transition-name:page}
+html,body,#page{margin:0;width:100%;height:100%;overflow:hidden}body{background:#fff}*{box-sizing:border-box}
+#page{position:relative;view-transition-name:page}
+#reader{position:absolute;top:0;bottom:0;left:0;width:100%;height:100%;overflow:hidden}
+#page-chapter,#page-progress{position:absolute;left:24px;right:24px;text-align:center;font:500 12px -apple-system,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.75}
+#page-chapter{top:0;display:flex;align-items:center;justify-content:center}
+#page-progress{bottom:0;display:flex;align-items:center;justify-content:center}
+#page-chapter[hidden],#page-progress[hidden]{display:none}
 ::view-transition-old(root),::view-transition-new(root){animation:none}
 ::view-transition-group(page){overflow:hidden}
 html[data-page-style="slide"][data-page-turn="next"]::view-transition-old(page){animation:page-out-left 290ms cubic-bezier(.24,.7,.22,1) both}
@@ -15,3 +20,16 @@ html[data-page-style="fade"]::view-transition-new(page){animation:page-fade-in 2
 @keyframes page-fade-out{to{opacity:0}}
 @keyframes page-fade-in{from{opacity:0}}
 @media(prefers-reduced-motion:reduce){::view-transition-old(page),::view-transition-new(page){animation:none!important}}
+
+/* Decoration lives outside publication frames, preserving EPUB CFI indices. */
+.reader-chapter-break { position:absolute; top:-36px; left:0; right:0; height:28px; display:flex; align-items:center; gap:14px; justify-content:center; font:500 13px -apple-system,sans-serif; color:inherit; opacity:.7; pointer-events:none; }
+.reader-chapter-break::before, .reader-chapter-break::after { content:""; flex:1; height:1px; background:currentColor; opacity:.3; }
+
+/* Hold old paper through reflow, then gently resolve into the new layout.
+   Only painted layers animate; EPUB layout still changes once at final size. */
+html[data-page-reflow]::view-transition-group(page){animation:none!important}
+html[data-page-reflow]::view-transition-old(page){object-fit:cover;object-position:left top;transform-origin:left top;animation:reflow-out 220ms cubic-bezier(.2,.7,.2,1) both}
+html[data-page-reflow]::view-transition-new(page){transform-origin:left top;animation:reflow-in 240ms cubic-bezier(.2,.7,.2,1) both}
+@keyframes reflow-out{from{opacity:1;transform:scale(1)}to{opacity:0;filter:blur(1px);transform:scale(var(--reflow-out-x,1),var(--reflow-out-y,1))}}
+@keyframes reflow-in{from{opacity:0;filter:blur(1px);transform:scale(var(--reflow-in-x,1),var(--reflow-in-y,1))}to{opacity:1;filter:blur(0);transform:scale(1)}}
+@media(prefers-reduced-motion:reduce){html[data-page-reflow]::view-transition-old(page),html[data-page-reflow]::view-transition-new(page){animation:none!important;filter:none;transform:none}}

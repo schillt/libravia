@@ -2,6 +2,11 @@ import SwiftUI
 
 struct LibraryLandingView: View {
     @Environment(AppModel.self) private var model
+    @ScaledMetric(relativeTo: .body) private var minimumCardWidth = 140.0
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private var columns: [GridItem] {
+        [GridItem(dynamicTypeSize.isAccessibilitySize ? .flexible() : .adaptive(minimum: minimumCardWidth, maximum: minimumCardWidth * 1.5), spacing: 14, alignment: .top)]
+    }
     @State private var recent: [Book] = []
     @State private var loading = false
     @State private var failure: String?
@@ -34,16 +39,16 @@ struct LibraryLandingView: View {
                 } else if recent.isEmpty {
                     ContentUnavailableView("No books yet", systemImage: "books.vertical", description: Text("Books added to this library will appear here."))
                 } else {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 14, alignment: .top), GridItem(.flexible(), spacing: 14, alignment: .top)], alignment: .leading, spacing: 18) {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
                         ForEach(recent.prefix(12)) { book in
-                            NavigationLink { BookDetailView(book: book) } label: { BookCard(book: book, coverWidth: 112) }
+                            NavigationLink { BookDetailView(book: book) } label: { BookCard(book: book) }
                                 .buttonStyle(.plain).modifier(BookActions(book: book))
                         }
                     }
                 }
             }.padding(20)
         }
-        .navigationTitle("Library")
+        .appSurface().navigationTitle("Library")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -106,7 +111,7 @@ struct CollectionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             CoverView(book: artworkBook)
-            Text(collection.name).font(.headline).lineLimit(2)
+            Text(collection.name).font(.headline).lineLimit(2, reservesSpace: true).accessibilityLabel(collection.name)
         }
         .accessibilityElement(children: .combine)
     }
@@ -116,6 +121,11 @@ private struct LibraryDirectoryView: View {
     @Environment(AppModel.self) private var model
     let kind: LibraryDirectoryKind
     let scope: CatalogScope
+    @ScaledMetric(relativeTo: .body) private var minimumCardWidth = 140.0
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private var columns: [GridItem] {
+        [GridItem(dynamicTypeSize.isAccessibilitySize ? .flexible() : .adaptive(minimum: minimumCardWidth, maximum: minimumCardWidth * 1.5), spacing: 14, alignment: .top)]
+    }
     @State private var query = ""
     @State private var items: [CatalogOption] = []
     @State private var offset = 0
@@ -132,7 +142,7 @@ private struct LibraryDirectoryView: View {
         Group {
             if kind == .collections {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 14, alignment: .top), GridItem(.flexible(), spacing: 14, alignment: .top)], alignment: .leading, spacing: 18) {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
                         ForEach(visibleItems) { option in
                             NavigationLink { destination(for: option) } label: { CollectionCard(collection: option) }
                                 .buttonStyle(.plain)
@@ -157,7 +167,7 @@ private struct LibraryDirectoryView: View {
                 }
             }
         }
-        .navigationTitle(kind.rawValue)
+        .appSurface().navigationTitle(kind.rawValue)
         .searchable(text: $query, prompt: "Find \(kind.rawValue.lowercased())")
         .task(id: pageKey) {
             pageTask?.cancel(); items = []; offset = 0; total = 0; failure = nil; loading = false

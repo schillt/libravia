@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		FABC44000000000000000001 /* ReaderTrackpadGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC44000000000000000002 /* ReaderTrackpadGesture.swift */; };
 		089A42F2B8EBF9E401964C28 /* App/Core/ArchiveExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAC6D9E8B5EB33CF52D0A8B7 /* App/Core/ArchiveExtractor.swift */; };
 		0C7E9464BF3BB95FB241A505 /* App/Resources/Licenses in Resources */ = {isa = PBXBuildFile; fileRef = 6D5D9004797377E10C60545A /* App/Resources/Licenses */; };
 		206D1605B41F21BFCBED5D82 /* JellyfinAPI in Frameworks */ = {isa = PBXBuildFile; productRef = D1D50749973C227EB7BE9254 /* JellyfinAPI */; };
@@ -30,9 +31,11 @@
 		E206A4FB7D7D64540512558E /* Fixtures in Resources */ = {isa = PBXBuildFile; fileRef = 6FC1F09BE441258BA67129D1 /* Fixtures */; };
 		F0C110FC1DB32D92F6D3BE1B /* App/Readers/EPUBSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFDAA76E0216C29CB9D3E983 /* App/Readers/EPUBSurface.swift */; };
 		F155899EC4584C83B076A4EE /* App/UI/DiscoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 683B0E9FEB1FB9AEF4BD6BD2 /* App/UI/DiscoveryViews.swift */; };
+		FABC33000000000000000001 /* App/Readers/MacReaderWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC33000000000000000002 /* App/Readers/MacReaderWindow.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		FABC44000000000000000002 /* ReaderTrackpadGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/ReaderTrackpadGesture.swift; sourceTree = SOURCE_ROOT; };
 		3F60D54AF9989335D88A0458 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration/Signing.xcconfig; sourceTree = SOURCE_ROOT; };
 		0803331CEF264E2B923DF446 /* App/Jellyfin/JellyfinProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Jellyfin/JellyfinProvider.swift; sourceTree = SOURCE_ROOT; };
 		20CAA4801EEF50C02A7BE9D0 /* App/Resources/AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = App/Resources/AppIcon.icon; sourceTree = SOURCE_ROOT; };
@@ -57,6 +60,7 @@
 		EBBAC092C3D1F6040A34023D /* App/Core/BookStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/BookStorage.swift; sourceTree = SOURCE_ROOT; };
 		F6DAA3A9ABD78EE0B1B39BC8 /* LibraVia.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = LibraVia.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC0AA3555FA4ECDF2B262A2F /* App/UI/ProgressRematchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/UI/ProgressRematchView.swift; sourceTree = SOURCE_ROOT; };
+		FABC33000000000000000002 /* App/Readers/MacReaderWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Readers/MacReaderWindow.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -89,12 +93,14 @@
 				CD0EB7AE07BC73E88909A89D /* App/Core/CatalogPresentation.swift */,
 				E7878CA23EEA7586044FB612 /* App/Core/Keychain.swift */,
 				B303777A1DB77DF7A06D9731 /* App/Core/Models.swift */,
+				FABC44000000000000000002 /* App/Core/ReaderTrackpadGesture.swift */,
 				0803331CEF264E2B923DF446 /* App/Jellyfin/JellyfinProvider.swift */,
 				916473D507AB3C8C8F224002 /* App/JellyfinBooksApp.swift */,
 				940772012351B1911C45483B /* App/Readers/ComicSurface.swift */,
 				BFDAA76E0216C29CB9D3E983 /* App/Readers/EPUBSurface.swift */,
 				AC282755A8F0DC9AFA59462A /* App/Readers/PDFSurface.swift */,
 				321B0F81135602C89D91532D /* App/Readers/ReaderView.swift */,
+				FABC33000000000000000002 /* App/Readers/MacReaderWindow.swift */,
 				683B0E9FEB1FB9AEF4BD6BD2 /* App/UI/DiscoveryViews.swift */,
 				62F94D280C21E01531003A66 /* App/UI/LibraryViews.swift */,
 				FC0AA3555FA4ECDF2B262A2F /* App/UI/ProgressRematchView.swift */,
@@ -190,12 +196,14 @@
 				30BC9ECD161ED623072689C7 /* App/Core/CatalogPresentation.swift in Sources */,
 				ADB32512B426188DE4612256 /* App/Core/Keychain.swift in Sources */,
 				356B7498ED5E3EDF644EACF6 /* App/Core/Models.swift in Sources */,
+				FABC44000000000000000001 /* App/Core/ReaderTrackpadGesture.swift in Sources */,
 				7D7C5273FC545281E8C38BE8 /* App/Jellyfin/JellyfinProvider.swift in Sources */,
 				E0E24310847DC3AE09047858 /* App/JellyfinBooksApp.swift in Sources */,
 				9B0BFAF11ED73017B4D11848 /* App/Readers/ComicSurface.swift in Sources */,
 				F0C110FC1DB32D92F6D3BE1B /* App/Readers/EPUBSurface.swift in Sources */,
 				502CDA56E4394CACD49A394B /* App/Readers/PDFSurface.swift in Sources */,
 				D8E3FA356C606C0988A8B4F1 /* App/Readers/ReaderView.swift in Sources */,
+				FABC33000000000000000001 /* App/Readers/MacReaderWindow.swift in Sources */,
 				F155899EC4584C83B076A4EE /* App/UI/DiscoveryViews.swift in Sources */,
 				95870BE3105FD7093593E1E0 /* App/UI/LibraryViews.swift in Sources */,
 				CCDB78E76FD20D9296A34234 /* App/UI/ProgressRematchView.swift in Sources */,
