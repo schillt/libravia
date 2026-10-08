@@ -417,6 +417,10 @@ window.readerCommand = async ({name,value}) => {
         // scrolls. Keep it for both flows so mode changes preserve one rendition,
         // its hooks, and exact CFI instead of reverting to single-chapter scrolling.
         rendition = book.renderTo('reader',{...viewportSize,manager:'continuous',resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false,flow:value.preferences.scrolling?'scrolled-continuous':'paginated'});
+        await rendition.started;
+        // Start each chapter on a complete spread in wide paginated layouts.
+        // Continuous scrolling ignores this horizontal-column setting.
+        if (rendition.manager?.viewSettings) rendition.manager.viewSettings.forceEvenPages = true;
         // Strip active and remote content before any chapter is rendered.
         book.spine.hooks.content.register(sanitizePublication);
         rendition.hooks.content.register(contents => {
