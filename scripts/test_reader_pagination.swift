@@ -66,7 +66,27 @@ import WebKit
                     const anchor=current;
                     await requestPagination();
                     assert(current===anchor,'Counting cannot move the live reader');
-                    return 'Actual consecutive pages, chapter crossing, exact scrub targets and font-size recount passed';
+                    resizeViewport({width:900,height:700});await pause(300);await paginationTask;
+                    await window.readerCommand({name:'layoutPage',value:0});await pause(200);
+                    assert(rendition.manager.layout.divisor===2,'Wide reader uses a two-column spread');
+                    assert(page()===1,'First wide spread');
+                    for(let i=2;i<=layoutPages.length;i++) {
+                      await window.readerCommand({name:'next'});await pause(120);
+                      assert(page()===i,'Consecutive wide spread '+i+' got '+page());
+                    }
+                    for(const target of [1,Math.floor(layoutPages.length/2),layoutPages.length]) {
+                      await window.readerCommand({name:'layoutPage',value:target-1});await pause(180);
+                      assert(page()===target,'Wide scrub target '+target+' got '+page());
+                    }
+                    navigationTitles.set(1,'Chapter 7');
+                    probePreferences.scrolling=true;
+                    await queueLayout(probePreferences);
+                    await rendition.display('two.xhtml');await pause(300);
+                    const chapterView=rendition.manager.views.find(book.spine.get('two.xhtml'));
+                    assert(chapterView.element.querySelector('.reader-chapter-break')?.textContent==='Chapter 7','Visible chapter boundary uses the navigation title');
+                    assert(navigationTitles.get(rendition.location.start.index)==='Chapter 7','Current chapter follows content rather than its ordinal');
+                    assert(layoutPages.length===0,'Scrolling cannot retain an obsolete page map');
+                    return 'Consecutive pages, exact scrub, type/viewport recount, position preservation and chapter boundaries passed';
                     """, arguments: [:], in: nil, contentWorld: .page)
                     finish(true, result as? String ?? "Renderer checks passed")
                 } catch {

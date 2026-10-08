@@ -54,7 +54,7 @@ function requestPagination() {
     let counterBook, counter, host;
     try {
       counterBook = ePub(publicationURL, {openAs:'opf'});
-      await counterBook.ready;
+      await withPaginationTimeout(counterBook.ready);
       if (generation !== paginationGeneration) return;
       counterBook.spine.hooks.content.register(sanitizePublication);
       host = document.createElement('div');
@@ -63,6 +63,8 @@ function requestPagination() {
       document.body.appendChild(host);
       counter = new ePub.Rendition(counterBook, {...size,manager:'default',flow:'paginated',resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false});
       counter.attachTo(host);
+      await withPaginationTimeout(counter.started);
+      counter.manager.viewSettings.forceEvenPages = rendition.manager.viewSettings.forceEvenPages;
       setReaderTheme(counter, p);
       const pages = [];
       for (const section of counterBook.spine.spineItems.filter(section => section.linear)) {
@@ -396,6 +398,10 @@ window.readerCommand = async ({name,value}) => {
         // Numeric dimensions disable EPUB.js's window-resize listener. Keyboard
         // focus may resize the window without changing the document's layout box.
         rendition = book.renderTo('reader',{...viewportSize,resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false,flow:value.preferences.scrolling?'scrolled-doc':'paginated'});
+        await rendition.started;
+        // Start each chapter on a complete spread in wide paginated layouts.
+        // Continuous scrolling ignores this horizontal-column setting.
+        if (rendition.manager?.viewSettings) rendition.manager.viewSettings.forceEvenPages = true;
         // Strip active and remote content before any chapter is rendered.
         book.spine.hooks.content.register(sanitizePublication);
         rendition.hooks.content.register(contents => {
