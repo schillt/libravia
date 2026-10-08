@@ -75,6 +75,7 @@ function queueLayout(p, resize = false) {
   });
   return layoutTask;
 }
+let previewPreferences;
 let searchTask = Promise.resolve();
 function sectionIsDisplayed(section) {
   const views = rendition.views?.();
@@ -383,8 +384,14 @@ window.readerCommand = async ({name,value}) => {
       case 'location': await layoutTask; await displayLocation(value); break;
       case 'seek': await layoutTask; await seek(value); break;
       case 'preferences': {
-        clearTimeout(preferenceTimer);
-        preferenceTimer = setTimeout(() => queueLayout(value), 180);
+        previewPreferences = value;
+        // Throttle instead of debounce: a sustained drag keeps updating the
+        // book, while serialized layout coalesces edits that arrive mid-reflow.
+        if (!preferenceTimer) preferenceTimer = setTimeout(() => {
+          preferenceTimer = undefined;
+          const p = previewPreferences; previewPreferences = undefined;
+          queueLayout(p);
+        }, 80);
         break;
       }
       case 'searchPresentation': setSearchPresentation(value); break;
