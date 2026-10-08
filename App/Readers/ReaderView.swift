@@ -649,9 +649,15 @@ struct ReaderView: View {
             if prepared.book.format == .epub {
                 Picker("Theme", selection: $model.preferences.theme) { Text("Light").tag("light"); Text("Sepia").tag("sepia"); Text("Dark").tag("dark") }
                 Picker("Font", selection: $model.preferences.font) { Text("Georgia").tag("Georgia"); Text("System sans serif").tag("-apple-system"); Text("Palatino").tag("Palatino") }
+                #if os(macOS)
+                inlineAdjustment(.textSize)
+                inlineAdjustment(.lineSpacing)
+                inlineAdjustment(.margins)
+                #else
                 adjustmentButton(.textSize)
                 adjustmentButton(.lineSpacing)
                 adjustmentButton(.margins)
+                #endif
                 Toggle("Scroll vertically", isOn: $model.preferences.scrolling)
                 if !model.preferences.scrolling {
                     Picker("Page turn", selection: $model.preferences.pageTransition) {
@@ -720,8 +726,32 @@ struct ReaderView: View {
         case .edgeWidth: return "\(Int((model.preferences.pageTapZoneFraction * 100).rounded()))% per side"
         }
     }
-    private func compactAdjustment(_ setting: ReaderAdjustment) -> some View {
+    #if os(macOS)
+    private func inlineAdjustment(_ setting: ReaderAdjustment) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(setting.rawValue).font(.headline)
+                Spacer()
+                Text(adjustmentValue(setting)).monospacedDigit().foregroundStyle(.secondary)
+            }
+            adjustmentSlider(setting)
+        }
+    }
+    #endif
+    @ViewBuilder private func adjustmentSlider(_ setting: ReaderAdjustment) -> some View {
         @Bindable var model = model
+        Group {
+            switch setting {
+            case .textSize: Slider(value: $model.preferences.fontSize, in: 14...36, step: 1)
+            case .lineSpacing: Slider(value: $model.preferences.lineHeight, in: 1.2...2.2, step: 0.1)
+            case .margins: Slider(value: $model.preferences.margin, in: 8...64, step: 4)
+            case .edgeWidth: Slider(value: $model.preferences.pageTapZoneFraction, in: 0.1...0.3, step: 0.05)
+            }
+        }
+        .accessibilityLabel(setting.rawValue)
+        .accessibilityValue(adjustmentValue(setting))
+    }
+    private func compactAdjustment(_ setting: ReaderAdjustment) -> some View {
         return VStack(spacing: 12) {
             HStack {
                 Button { selectAdjustment(nil) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
@@ -747,16 +777,7 @@ struct ReaderView: View {
                     .accessibilityLabel("Close appearance")
                 #endif
             }
-            Group {
-                switch setting {
-                case .textSize: Slider(value: $model.preferences.fontSize, in: 14...36, step: 1)
-                case .lineSpacing: Slider(value: $model.preferences.lineHeight, in: 1.2...2.2, step: 0.1)
-                case .margins: Slider(value: $model.preferences.margin, in: 8...64, step: 4)
-                case .edgeWidth: Slider(value: $model.preferences.pageTapZoneFraction, in: 0.1...0.3, step: 0.05)
-                }
-            }
-            .accessibilityLabel(setting.rawValue)
-            .accessibilityValue(adjustmentValue(setting))
+            adjustmentSlider(setting)
         }
         .padding(.horizontal, 24).padding(.vertical, 12)
     }
@@ -792,8 +813,7 @@ struct ReaderView: View {
                 }.padding(12)
                 searchResults
             } else if panel == .appearance {
-                if let adjustment { compactAdjustment(adjustment); Spacer() }
-                else { appearance.scrollContentBackground(.hidden) }
+                appearance.scrollContentBackground(.hidden)
             } else { contents.scrollContentBackground(.hidden) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(8)
