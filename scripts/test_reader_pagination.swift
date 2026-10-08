@@ -83,6 +83,17 @@ import WebKit
                       await window.readerCommand({name:'layoutPage',value:target-1});await pause(180);
                       assert(page()===target,'Wide scrub target '+target+' got '+page());
                     }
+                    await window.readerCommand({name:'layoutPage',value:0});
+                    for(const width of [660,1000,660,1000]) {
+                      const first=window.readerCommand({name:'next'});
+                      resizeViewport({width,height:700});
+                      const second=window.readerCommand({name:'next'});
+                      await Promise.all([first,second]);await layoutTask;await pause(120);
+                      assert(rendition.manager.views.length>0,'Inspector resize retains rendered views');
+                      const saved=current;
+                      await window.readerCommand({name:'previous'});await pause(120);
+                      assert(current!==saved,'Page commands remain active after inspector reflow');
+                    }
                     navigationTitles.set(1,'Chapter 7');
                     probePreferences.scrolling=true;
                     await queueLayout(probePreferences);
@@ -91,7 +102,7 @@ import WebKit
                     assert(chapterView.element.querySelector('.reader-chapter-break')?.textContent==='Chapter 7','Visible chapter boundary uses the navigation title');
                     assert(navigationTitles.get(rendition.location.start.index)==='Chapter 7','Current chapter follows content rather than its ordinal');
                     assert(layoutPages.length===0,'Scrolling cannot retain an obsolete page map');
-                    return 'Consecutive pages, exact scrub, type/viewport recount, position preservation and chapter boundaries passed';
+                    return 'Consecutive pages, exact scrub, type/viewport recount, position preservation, inspector reflow/turn ordering and chapter boundaries passed';
                     """, arguments: [:], in: nil, contentWorld: .page)
                     finish(true, result as? String ?? "Renderer checks passed")
                 } catch {

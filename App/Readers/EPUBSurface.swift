@@ -32,6 +32,10 @@ struct EPUBSurface: EPUBViewRepresentable {
         config.userContentController.add(coordinator, name: "reader")
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = coordinator; coordinator.web = web
+        #if os(macOS)
+        let click = NSClickGestureRecognizer(target: coordinator, action: #selector(Coordinator.readerClick(_:)))
+        web.addGestureRecognizer(click)
+        #endif
         #if os(iOS)
         web.scrollView.contentInsetAdjustmentBehavior = .never
         let tap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.readerTap(_:)))
@@ -276,7 +280,7 @@ struct EPUBSurface: EPUBViewRepresentable {
             let point = gesture.location(in: web)
             // WebKit uses top-left document coordinates; NSView may be unflipped.
             let y = web.isFlipped ? point.y : web.bounds.height - point.y
-            send("gesture", ["action": "tap", "x": point.x, "y": y])
+            send("gesture", ["action": "pointerTap", "x": point.x, "y": y])
         }
         #endif
         #if os(iOS)

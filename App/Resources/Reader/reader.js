@@ -228,7 +228,9 @@ function queueLayout(p, resize = false) {
   if (p) pendingPreferences = p;
   pendingResize = pendingResize || resize;
   if (layoutTask) return layoutTask;
+  const precedingTurn = turnTask;
   layoutTask = Promise.resolve().then(async () => {
+    await precedingTurn.catch(() => {});
     restoring = true;
     try {
       while (pendingPreferences || pendingResize) {
@@ -237,7 +239,12 @@ function queueLayout(p, resize = false) {
         if (size && (size.width !== viewportSize?.width || size.height !== viewportSize?.height)) {
           invalidatePagination(); viewportSize = size;
           // EPUB.js restores its own CFI once. Do not redisplay a boundary CFI.
-          rendition.resize(size.width,size.height);
+          const anchor = current || rendition.location?.start?.cfi;
+          rendition.resize(size.width,size.height,anchor);
+          // resize() clears views and enqueues an internal CFI redisplay. Wait
+          // for that queue before another resize or page command touches views.
+          if (rendition.q?.enqueue) await withPaginationTimeout(rendition.q.enqueue(() => {}));
+          if (rendition.reportLocation) await withPaginationTimeout(rendition.reportLocation());
         }
         const anchor = current || rendition.location?.start?.cfi;
         const relayout = p && paginationSignature(p) !== paginationSignature();
@@ -413,9 +420,10 @@ function turn(direction, preview = false, request = null) {
   // WebKit captures both rendered pages; EPUB.js only advances once between snapshots.
   // Serialize rendering only. Native decoration never blocks the next input.
   activeTransition?.skipTransition();
+  const precedingLayout = layoutTask;
   turnTask = turnTask.catch(() => {}).then(async () => {
     activeTransition?.skipTransition();
-    await layoutTask;
+    await precedingLayout;
     if (scrolling) return;
     const advance = async () => { await withPaginationTimeout(direction === 'next' ? rendition.next() : rendition.prev()); updatePageInformation(rendition.location); };
     if (nativePageTurns || pageTransition === 'instant' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || typeof document.startViewTransition !== 'function') {
@@ -616,7 +624,7 @@ window.readerCommand = async ({name,value}) => {
         requestPagination();
         break;
       case 'gesture': {
-        if (!insideContent(value.x,value.y)) { if (value.action === 'tap') send('toggleControls'); return; }
+        if (!insideContent(value.x,value.y)) { if (value.action === 'tap' || value.action === 'pointerTap') send('toggleControls'); return; }
         const frames = Array.from(document.querySelectorAll('iframe'));
         for (const frame of frames) {
           const rect = frame.getBoundingClientRect();
@@ -629,7 +637,8 @@ window.readerCommand = async ({name,value}) => {
           const target = frame.contentDocument?.elementFromPoint(value.x - rect.left, value.y - rect.top);
           if (target?.closest('a,button,input,select,textarea')) return;
         }
-        if (value.action === 'tap') await pageTap(value.x);
+        if (value.action === 'pointerTap') send('toggleControls');
+        else if (value.action === 'tap') await pageTap(value.x);
         else if (!scrolling && (value.action === 'next' || value.action === 'previous')) {
           if (nativePageTurns) send('swipe',{direction:value.action});
           else await turn(value.action);

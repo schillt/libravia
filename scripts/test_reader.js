@@ -326,11 +326,32 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
    assert.equal(anchors.at(-1),'saved-anchor','Opening restores the saved exact location');
    for (const scrolling of [!initiallyScrolling, initiallyScrolling]) {
      await flowContext.window.readerCommand({name:'preferences',value:{scrolling}});
-     const apply=[...flowTimers.values()].at(-1);flowTimers.clear();await apply();
+     const apply=[...flowTimers.values()].at(-1);flowTimers.clear();await apply();await vm.runInContext("layoutTask",flowContext);
      assert.equal(flows.at(-1),scrolling?'scrolled-continuous':'paginated','Mode changes retain continuous chapter flow');
      assert.equal(anchors.at(-1),'saved-anchor','Mode changes restore the exact CFI');
      assert.equal(flowMessages.filter(m=>m.kind==='error').length,0);
    }
  }
+ // Inspector reflow must wait for an in-flight turn, and the next turn must
+ // wait for EPUB.js's resize redisplay queue instead of touching cleared views.
+ const orderContext={window:{webkit:{messageHandlers:{reader:{postMessage(){}}}}},
+ document:{documentElement:{dataset:{}}},setTimeout:()=>1,clearTimeout(){}};
+ vm.createContext(orderContext);
+ vm.runInContext(fs.readFileSync('App/Resources/Reader/reader.js','utf8'),orderContext);
+ const operations=[]; let finishTurn,finishResize;
+ orderContext.mock={location:{start:{cfi:'saved'}},
+ next:()=>{operations.push('turn');return operations.filter(x=>x==='turn').length===1?new Promise(r=>finishTurn=r):Promise.resolve();},
+ resize:(w,h,cfi)=>operations.push('resize:'+cfi),
+ q:{enqueue:()=>new Promise(r=>finishResize=r)},reportLocation:async()=>operations.push('restored')};
+ vm.runInContext("rendition=mock;current='saved';viewportSize={width:1000,height:700};pendingViewport={width:660,height:700};pageTransition='instant';requestPagination=()=>{};updatePageInformation=()=>{};invalidatePagination=()=>{};clearChapterSelections=()=>{};",orderContext);
+ const before=vm.runInContext("turn('next')",orderContext);
+ const resizing=vm.runInContext('queueLayout(undefined,true)',orderContext);
+ const after=vm.runInContext("turn('next')",orderContext);
+ for(let i=0;i<8;i++)await tick();
+ assert.deepEqual(operations,['turn'],'Resize cannot clear views during an active turn');
+ finishTurn();await before;for(let i=0;i<8;i++)await tick();
+ assert.deepEqual(operations,['turn','resize:saved'],'Next turn waits for internal resize redisplay');
+ finishResize();await resizing;await after;
+ assert.deepEqual(operations,['turn','resize:saved','restored','turn'],'Resize restoration and turns complete in order without deadlock');
  console.log('Reader bridge: cancellation, ownership, layout, resize, continuous-flow opening and mode restoration checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1});

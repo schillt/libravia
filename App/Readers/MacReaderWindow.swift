@@ -157,11 +157,13 @@ struct MacReaderSearchField: NSViewRepresentable {
 
 #if os(macOS)
 struct MacReaderInput: NSViewRepresentable {
+    var chromeVisible: Bool
     var canTurn: () -> Bool
     var turn: (String) -> Void
     func makeNSView(context: Context) -> MacReaderInputRegion { MacReaderInputRegion() }
     func updateNSView(_ view: MacReaderInputRegion, context: Context) {
         view.canTurnPage = canTurn; view.turnPage = turn
+        view.chromeVisible = chromeVisible; view.updateChrome()
     }
     static func dismantleNSView(_ view: MacReaderInputRegion, coordinator: ()) { view.removeMonitor() }
 }
@@ -172,12 +174,22 @@ struct MacReaderInput: NSViewRepresentable {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     var canTurnPage: (() -> Bool)?
     var turnPage: ((String) -> Void)?
+    var chromeVisible = true
+    func updateChrome() {
+        guard let window else { return }
+        window.titleVisibility = chromeVisible ? .visible : .hidden
+        window.titlebarAppearsTransparent = !chromeVisible
+        for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(button)?.isHidden = !chromeVisible
+        }
+    }
     private var inputMonitor: Any?
     private var trackpadGesture = ReaderTrackpadGesture()
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         removeMonitor()
         guard window != nil else { return }
+        updateChrome()
         inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { [weak self] event in
             MainActor.assumeIsolated { self?.handle(event) ?? event }
         }
