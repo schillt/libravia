@@ -77,20 +77,21 @@ struct EPUBSurface: EPUBViewRepresentable {
         private var curlBlockedRegions: [CGRect] = []
         private var textSelectionActive = false
         func viewportDidChange() {
-            abortInteractive(); resetCurl(); invalidateSnapshots(); cachedPage = nil; cacheRequest = UUID()
+            let interruptedCurl = curlTurning
+            abortInteractive()
+            if interruptedCurl { resetCurl() }
+            invalidateSnapshots(); cachedPage = nil; cacheRequest = UUID()
         }
         func cachedAdjacentPage(_ direction: String) -> UIImage? {
-            guard cachedPageCFI == controller.position.cfi, cachedPageSize == web?.bounds.size,
+            guard cachedPage != nil, cachedPageCFI == controller.position.cfi, cachedPageSize == web?.bounds.size,
                   cachedPagePreferences == latestPreferences else { return nil }
             return adjacentPages[direction]
         }
         func canCurl(at point: CGPoint) -> Bool {
             guard controller.ready, !curlTurning, turnToken == nil, pendingCard == nil, !textSelectionActive, let web,
                   !curlBlockedRegions.contains(where: { $0.contains(point) }) else { return false }
-            let edge = min(72, web.bounds.width * 0.2)
-            if point.x < edge { return cachedAdjacentPage("previous") != nil }
-            if point.x > web.bounds.width - edge { return cachedAdjacentPage("next") != nil }
-            return false
+            guard web.bounds.contains(point) else { return false }
+            return cachedAdjacentPage("previous") != nil || cachedAdjacentPage("next") != nil
         }
         func resumeQueuedTurns() { drainTurns() }
         private func resetCurl() {
@@ -138,6 +139,9 @@ struct EPUBSurface: EPUBViewRepresentable {
         private var interactiveFinishing = false
         private var snapshotWeb: WKWebView?
         private var snapshotBooted = false
+        private var snapshotBusyRequest: String?
+        private var currentCaptureInFlight: UUID?
+        private var currentCapturePending = false
         private var snapshotOrigin: [String: Any]?
         private var snapshotRequest: String?
         private var snapshotKey: String?
@@ -189,7 +193,12 @@ struct EPUBSurface: EPUBViewRepresentable {
         }
         private func captureAdjacentPage() {
             guard snapshotBooted, let origin = snapshotOrigin, let request = snapshotRequest,
-                  let direction = snapshotDirections.first else { return }
+                  let direction = snapshotDirections.first, snapshotBusyRequest == nil else { return }
+            snapshotBusyRequest = request
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                guard let self, self.snapshotBusyRequest == request else { return }
+                self.invalidateSnapshots(); self.releaseSnapshotRenderer()
+            }
             let relative = String(prepared.document.path.dropFirst(prepared.directory.path.count + 1))
             var url = URLComponents(); url.scheme = "appbook"; url.host = "local"; url.path = "/publication/" + relative
             let value: [String: Any] = ["url":url.url!.absoluteString,"origin":origin,"preferences":preferencesObject(),"direction":direction,"request":request]
@@ -198,30 +207,47 @@ struct EPUBSurface: EPUBViewRepresentable {
         }
         private func receiveSnapshot(_ value: [String: Any], kind: String) {
             if kind == "boot" { snapshotBooted = true; captureAdjacentPage(); return }
-            guard let request = value["request"] as? String, request == snapshotRequest else { return }
+            guard let request = value["request"] as? String, request == snapshotBusyRequest else { return }
+            guard request == snapshotRequest else {
+                snapshotBusyRequest = nil; captureAdjacentPage(); return
+            }
             guard kind == "snapshotReady", let direction = value["direction"] as? String,
-                  direction == snapshotDirections.first else { invalidateSnapshots(); return }
+                  direction == snapshotDirections.first else {
+                invalidateSnapshots(); releaseSnapshotRenderer(); return
+            }
             if value["exists"] as? Bool != true {
+                snapshotBusyRequest = nil
                 unavailablePages.insert(direction); snapshotDirections.removeFirst(); captureAdjacentPage()
+                if snapshotDirections.isEmpty { hostController?.refreshNeighbours() }
                 if let swipe = interactiveSwipe { updateInteractive(swipe) }
                 return
             }
             let config = WKSnapshotConfiguration(); config.afterScreenUpdates = true
             snapshotWeb?.takeSnapshot(with: config) { [weak self] image, _ in
-                guard let self, self.snapshotRequest == request, direction == self.snapshotDirections.first else { return }
+                guard let self, self.snapshotBusyRequest == request else { return }
+                self.snapshotBusyRequest = nil
+                guard self.snapshotRequest == request, direction == self.snapshotDirections.first else {
+                    self.captureAdjacentPage(); return
+                }
                 if let image { self.adjacentPages[direction] = image }
                 self.snapshotDirections.removeFirst()
                 if let swipe = self.interactiveSwipe { swipe.readyTranslation = swipe.translation; self.updateInteractive(swipe) }
-                self.hostController?.refreshNeighbours()
                 self.captureAdjacentPage()
+                if self.snapshotDirections.isEmpty { self.hostController?.refreshNeighbours() }
             }
         }
-        func stopSnapshots() {
-            abortInteractive(); invalidateSnapshots()
+        private func releaseSnapshotRenderer() {
             snapshotWeb?.configuration.userContentController.removeScriptMessageHandler(forName: "reader")
+            snapshotWeb?.navigationDelegate = nil; snapshotWeb?.stopLoading()
             snapshotWeb?.removeFromSuperview(); snapshotWeb = nil
+            snapshotBooted = false; snapshotBusyRequest = nil; snapshotOrigin = nil
+        }
+        func stopSnapshots() {
+            abortInteractive(); invalidateSnapshots(); releaseSnapshotRenderer()
+            cachedPage = nil; cacheRequest = UUID(); currentCapturePending = false
             curlCompletion = nil; curlToken = nil; curlTurning = false
         }
+        func sourcePageImage() -> UIImage? { cachedPage }
         private var cachedPage: UIImage?
         private var cachedPageSize: CGSize = .zero
         private var cachedPageCFI: String?
@@ -421,15 +447,32 @@ struct EPUBSurface: EPUBViewRepresentable {
             interactiveSwipe = nil; pendingCard = nil; interactiveFinishing = false; queuedTurns.removeAll()
         }
         private func cacheCurrentPage() {
-            guard controller.ready, !latestPreferences.scrolling, interactiveSwipe == nil,
-                  !interactiveFinishing, !curlTurning, turnToken == nil,
+            guard controller.ready, !latestPreferences.scrolling,
+                  ["slide", "curl"].contains(latestPreferences.pageTransition), !UIAccessibility.isReduceMotionEnabled,
+                  interactiveSwipe == nil, !interactiveFinishing, !curlTurning, turnToken == nil,
                   let web, let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
-            let request = UUID(); cacheRequest = request
             let size = web.bounds.size, preferences = latestPreferences
+            if cachedPage != nil, cachedPageCFI == cfi, cachedPageSize == size, cachedPagePreferences == preferences {
+                warmAdjacentPages(); return
+            }
+            guard currentCaptureInFlight == nil else { currentCapturePending = true; return }
+            let request = UUID(); cacheRequest = request; currentCaptureInFlight = request
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                guard let self, self.currentCaptureInFlight == request else { return }
+                // Quiesce this session rather than spawning overlapping retries.
+                self.currentCapturePending = false; self.cacheRequest = UUID()
+                self.invalidateSnapshots(); self.releaseSnapshotRenderer()
+                self.controller.error = "Page previews stopped responding. Close this book and reopen it to continue."
+            }
             let configuration = WKSnapshotConfiguration()
             configuration.afterScreenUpdates = true
             web.takeSnapshot(with: configuration) { [weak self] image, _ in
-                guard let self, self.cacheRequest == request, self.interactiveSwipe == nil,
+                guard let self, self.currentCaptureInFlight == request else { return }
+                self.currentCaptureInFlight = nil
+                defer {
+                    if self.currentCapturePending { self.currentCapturePending = false; self.cacheCurrentPage() }
+                }
+                guard self.cacheRequest == request, self.interactiveSwipe == nil,
                       self.turnToken == nil, !self.interactiveFinishing, !self.curlTurning,
                       self.controller.position.cfi == cfi, self.latestPreferences == preferences,
                       self.web?.bounds.size == size else { return }
@@ -617,9 +660,11 @@ struct EPUBSurface: EPUBViewRepresentable {
             controller.error = "The local reader could not be loaded." }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             #if os(iOS)
-            if webView === snapshotWeb { stopSnapshots(); snapshotBooted = false; return }
+            if webView === snapshotWeb { invalidateSnapshots(); releaseSnapshotRenderer(); return }
+            stopSnapshots(); hostController?.resetCurlSurface(rebuild: false)
             #endif
-            controller.error = "The reader ran out of resources. Close this book and reopen it." }
+            controller.ready = false
+            controller.error = "The book's reading process stopped. Close this book and reopen it to continue." }
     }
 }
 #if os(iOS)
@@ -638,6 +683,13 @@ struct EPUBSurface: EPUBViewRepresentable {
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func show(_ image: UIImage) {
+        view.subviews.forEach { $0.removeFromSuperview() }
+        let picture = UIImageView(image: image); picture.frame = view.bounds
+        picture.autoresizingMask = [.flexibleWidth, .flexibleHeight]; picture.contentMode = .scaleToFill
+        picture.isUserInteractionEnabled = false; picture.accessibilityElementsHidden = true
+        view.addSubview(picture)
+    }
     func attach(_ web: WKWebView) {
         view.subviews.forEach { $0.removeFromSuperview() }
         web.frame = view.bounds; web.autoresizingMask = [.flexibleWidth, .flexibleHeight]; view.addSubview(web)
@@ -646,9 +698,7 @@ struct EPUBSurface: EPUBViewRepresentable {
 @MainActor final class ReaderCurlGate: UIView {
     weak var owner: ReaderHostController?
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        if event?.type == .touches, event?.allTouches?.contains(where: { $0.phase == .began }) == true {
-            owner?.gateCurlGestures(at: point)
-        }
+        if event?.type == .touches { owner?.gateCurlGestures(at: point) }
         return super.hitTest(point, with: event)
     }
 }
@@ -658,6 +708,7 @@ struct EPUBSurface: EPUBViewRepresentable {
     private var curl: UIPageViewController?
     private var currentPage: ReaderCurlPage?
     private var lastSize = CGSize.zero
+    private var neighbours: [Int:ReaderCurlPage] = [:]
     init(web: WKWebView, coordinator: EPUBSurface.Coordinator) {
         self.web = web; self.coordinator = coordinator; super.init(nibName: nil, bundle: nil)
     }
@@ -682,7 +733,8 @@ struct EPUBSurface: EPUBViewRepresentable {
         curl?.view.backgroundColor = paperColor; currentPage?.view.backgroundColor = paperColor
         let enabled = coordinator?.latestPreferences.pageTransition == "curl" && coordinator?.latestPreferences.scrolling == false && !UIAccessibility.isReduceMotionEnabled
         if enabled, curl == nil {
-            let page = ReaderCurlPage(offset: 0, image: nil, color: paperColor); page.attach(web)
+            let page = ReaderCurlPage(offset: 0, image: nil, color: paperColor)
+            page.view.frame = view.bounds; page.attach(web)
             let controller = UIPageViewController(transitionStyle: .pageCurl, navigationOrientation: .horizontal,
                                                   options: [.spineLocation:UIPageViewController.SpineLocation.min.rawValue])
             controller.view.backgroundColor = paperColor; controller.isDoubleSided = false
@@ -692,33 +744,40 @@ struct EPUBSurface: EPUBViewRepresentable {
             view.addSubview(controller.view); controller.didMove(toParent: self)
             controller.setViewControllers([page], direction: .forward, animated: false)
             currentPage = page; curl = controller
-            gateCurlGestures(at: CGPoint(x: view.bounds.midX, y: view.bounds.midY))
+            // Native pans start enabled; missing pages are rejected by the data source.
+            // Keep UIKit's delegates and disable only its tap-to-turn recognizers.
+            for gesture in controller.gestureRecognizers { gesture.isEnabled = !(gesture is UITapGestureRecognizer) }
         } else if !enabled, let curl {
             curl.willMove(toParent: nil)
             web.removeFromSuperview(); web.frame = view.bounds; view.addSubview(web)
-            curl.view.removeFromSuperview(); curl.removeFromParent(); self.curl = nil; currentPage = nil
+            curl.view.removeFromSuperview(); curl.removeFromParent(); self.curl = nil; currentPage = nil; neighbours.removeAll()
         }
     }
-    func resetCurlSurface() {
+    func resetCurlSurface(rebuild: Bool = true) {
         guard let old = curl else { return }
         old.delegate = nil; old.dataSource = nil; old.willMove(toParent: nil)
         web.removeFromSuperview(); web.frame = view.bounds; view.addSubview(web)
-        old.view.removeFromSuperview(); old.removeFromParent(); curl = nil; currentPage = nil
-        configureCurl()
+        old.view.removeFromSuperview(); old.removeFromParent(); curl = nil; currentPage = nil; neighbours.removeAll()
+        if rebuild { configureCurl() }
     }
     func restoreLivePage() {
         guard let curl else { return }
         curl.delegate = nil
-        let page = ReaderCurlPage(offset: 0, image: nil, color: paperColor); page.attach(web)
+        let page = ReaderCurlPage(offset: 0, image: nil, color: paperColor)
+        page.view.frame = view.bounds; page.attach(web)
         curl.setViewControllers([page], direction: .forward, animated: false)
         currentPage = page; curl.delegate = self
     }
     func refreshNeighbours() {
         guard coordinator?.curlTurning == false, let curl, let currentPage else { return }
-        curl.dataSource = nil; curl.dataSource = self
+        // Refresh UIKit's retained adjacency once per completed preview generation,
+        // without reparenting WebKit or resetting its viewport for each image.
+        neighbours.removeAll(); curl.dataSource = nil
         curl.setViewControllers([currentPage], direction: .forward, animated: false)
+        curl.dataSource = self
     }
     func gateCurlGestures(at point: CGPoint) {
+        guard coordinator?.curlTurning == false else { return }
         let allowed = coordinator?.canCurl(at: point) == true
         // UIKit retains its own gesture delegates. Only documented recognizer
         // enablement is changed; native taps defer to LibraVia's tap zones.
@@ -726,7 +785,9 @@ struct EPUBSurface: EPUBViewRepresentable {
     }
     private func neighbour(_ offset: Int) -> ReaderCurlPage? {
         guard abs(offset) == 1, let image = coordinator?.cachedAdjacentPage(offset > 0 ? "next" : "previous") else { return nil }
-        return ReaderCurlPage(offset: offset, image: image, color: paperColor)
+        if let page = neighbours[offset] { page.show(image); return page }
+        let page = ReaderCurlPage(offset: offset, image: image, color: paperColor)
+        page.view.frame = view.bounds; neighbours[offset] = page; return page
     }
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
         guard let page = viewController as? ReaderCurlPage else { return nil }; return neighbour(page.offset - 1)
@@ -739,16 +800,30 @@ struct EPUBSurface: EPUBViewRepresentable {
     }
     func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool,
                             previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
-        guard pageViewController === curl else { return }
+        guard pageViewController === curl, coordinator?.curlTurning == true else { return }
         guard completed, let page = pageViewController.viewControllers?.first as? ReaderCurlPage, page.offset != 0 else {
             coordinator?.curlTurning = false; coordinator?.resumeQueuedTurns(); return
         }
         commit(page)
     }
     private func commit(_ page: ReaderCurlPage) {
-        coordinator?.commitCurl(page.offset > 0 ? "next" : "previous") { [weak self, weak page] in
-            guard let self, let page else { return }
-            page.offset = 0; page.attach(self.web); self.currentPage = page; self.refreshNeighbours()
+        let direction = page.offset
+        let previous = currentPage, sourceImage = coordinator?.sourcePageImage()
+        let destinationImage = coordinator?.cachedAdjacentPage(direction > 0 ? "next" : "previous")
+        // EPUB.js schedules layout on animation frames. Keep the live renderer
+        // in the visible destination hierarchy before asking it to advance.
+        // The honest destination preview hides that layout without detaching it.
+        if let previous, let sourceImage { previous.offset = -direction; previous.show(sourceImage) }
+        page.offset = 0; page.attach(web); currentPage = page; neighbours.removeAll()
+        if let previous, sourceImage != nil { neighbours[-direction] = previous }
+        let preview = destinationImage.map { UIImageView(image: $0) }
+        if let preview {
+            preview.frame = page.view.bounds; preview.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            preview.isUserInteractionEnabled = false; preview.accessibilityElementsHidden = true
+            page.view.addSubview(preview)
+        }
+        coordinator?.commitCurl(direction > 0 ? "next" : "previous") { [weak preview] in
+            preview?.removeFromSuperview()
         }
     }
     func animateCurl(_ direction: String) -> Bool {

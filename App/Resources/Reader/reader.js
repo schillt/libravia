@@ -404,7 +404,25 @@ function reportPosition(location) {
 }
 // A separate renderer prepares real adjacent pages. It has no persistence,
 // search, native gestures or full-book pagination work.
-let snapshotTask = Promise.resolve();
+let snapshotTask = Promise.resolve(), snapshotRunning = false, snapshotPending = null;
+function queueSnapshot(value) {
+  return new Promise(resolve => {
+    // Obsolete waiting work is discarded before it can load another chapter.
+    if (snapshotPending) snapshotPending.resolve();
+    snapshotPending = {value,resolve};
+    if (snapshotRunning) return;
+    snapshotRunning = true;
+    snapshotTask = (async () => {
+      while (snapshotPending) {
+        const job = snapshotPending; snapshotPending = null;
+        try { await renderSnapshot(job.value); }
+        catch (_) { send('snapshotError',{request:job.value.request}); }
+        finally { job.resolve(); }
+      }
+      snapshotRunning = false;
+    })();
+  });
+}
 window.readerSnapshotOrigin = () => {
   if (!ready || scrolling || restoring || !rendition.location?.start) return null;
   const start = rendition.location.start, divisor = rendition.manager.layout.divisor || 1;
@@ -548,8 +566,7 @@ window.readerCommand = async ({name,value}) => {
         break;
       }
       case 'snapshot':
-        snapshotTask = snapshotTask.catch(() => {}).then(() => renderSnapshot(value));
-        try { await snapshotTask; } catch (_) { send('snapshotError',{request:value.request}); }
+        await queueSnapshot(value);
         break;
       case 'nativeTurn':
         if (value.direction === 'next' || value.direction === 'previous') await turn(value.direction, false, value.request);

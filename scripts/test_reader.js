@@ -28,6 +28,20 @@ assert.ok(excerpt.length > 200 && excerpt.length < 340, 'Search provides bounded
 const tick = async()=>{ await Promise.resolve(); await Promise.resolve(); };
 const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();return callback();};
 (async()=>{
+ const originalSnapshot=context.renderSnapshot, snapshotJobs=[];
+ let releaseSnapshot;
+ context.renderSnapshot=value=>{
+   snapshotJobs.push(value.request);
+   return value.request==='busy' ? new Promise(resolve=>{releaseSnapshot=resolve;}) : Promise.resolve();
+ };
+ const busy=context.window.readerCommand({name:'snapshot',value:{request:'busy'}});
+ const obsolete=context.window.readerCommand({name:'snapshot',value:{request:'obsolete'}});
+ const newest=context.window.readerCommand({name:'snapshot',value:{request:'newest'}});
+ assert.deepEqual(snapshotJobs,['busy'],'Only one auxiliary render is active');
+ await obsolete;
+ releaseSnapshot();await Promise.all([busy,newest]);
+ assert.deepEqual(snapshotJobs,['busy','newest'],'Only latest waiting preview runs; obsolete work is discarded');
+ context.renderSnapshot=originalSnapshot;
  let turns = 0;
  context.mockRendition.next=async()=>turns++;
  context.mockRendition.prev=async()=>turns--;
