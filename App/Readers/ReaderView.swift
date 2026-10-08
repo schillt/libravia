@@ -133,6 +133,10 @@ struct ReaderView: View {
           HStack(spacing: 0) {
           NavigationStack {
             readerSurface(chrome: pageChrome(safeInsets: pageInsets))
+                #if os(macOS)
+                .background(MacReaderInput(canTurn: { controller.ready && showsPageTurnButtons },
+                                           turn: { controller.command?($0, nil) }))
+                #endif
                 .mask {
                     if prepared.book.format == .epub && model.preferences.scrolling && !reduceTransparency && contrast != .increased {
                         VStack(spacing: 0) {
@@ -170,7 +174,7 @@ struct ReaderView: View {
                             controlsActivity = UUID()
                         } label: {
                             VStack(spacing: 2) {
-                                if controller.controlsVisible || voiceOver {
+                                if !isDesktop && (controller.controlsVisible || voiceOver) {
                                     Text(prepared.book.title).font(.caption2).foregroundStyle(readerForeground.opacity(0.85))
                                         .lineLimit(1).transition(.opacity)
                                 }
@@ -189,7 +193,7 @@ struct ReaderView: View {
                         .opacity(readerChromeVisible || (!pageContainsInfo && keepTitleVisible) ? 1 : 0)
                         .allowsHitTesting(readerChromeVisible || (!pageContainsInfo && keepTitleVisible))
                         .accessibilityHidden(!(readerChromeVisible || (!pageContainsInfo && keepTitleVisible)))
-                        if readerChromeVisible, ReaderCapabilities(format: prepared.book.format).textSearch {
+                        if !isDesktop && readerChromeVisible, ReaderCapabilities(format: prepared.book.format).textSearch {
                             Button { openSearch() } label: { Image(systemName: "magnifyingglass").font(.system(size: 18, weight: .medium)).frame(width: 44, height: 44) }
                                 .accessibilityLabel("Search book").buttonStyle(.plain).glassEffect(readerGlass.interactive(), in: Circle())
                                 .glassEffectID("readerSearch", in: glassNamespace)
@@ -260,11 +264,28 @@ struct ReaderView: View {
           .statusBarHidden(pageContainsInfo && !controller.controlsVisible && !voiceOver)
           #endif
           #if os(macOS)
-          if searchVisible || panel != nil {
-              Divider()
-              macSidebar
-                  .frame(width: min(360, max(260, geometry.size.width * 0.34)))
-                  .background(.background)
+          .inspector(isPresented: Binding(get: { searchVisible || panel != nil }, set: { visible in
+              if !visible { closeSearch(); panel = nil }
+          })) {
+              macSidebar.inspectorColumnWidth(min: 300, ideal: 340, max: 420)
+          }
+          .toolbar {
+              ToolbarItemGroup(placement: .navigation) {
+                  Button("Previous page", systemImage: "chevron.left") { controller.command?("previous", nil) }
+                      .disabled(!controller.ready || !showsPageTurnButtons)
+                  Button("Next page", systemImage: "chevron.right") { controller.command?("next", nil) }
+                      .disabled(!controller.ready || !showsPageTurnButtons)
+              }
+              ToolbarItemGroup(placement: .primaryAction) {
+                  if !searchVisible && panel == nil && ReaderCapabilities(format: prepared.book.format).textSearch {
+                      Button("Search book", systemImage: "magnifyingglass", action: openSearch).disabled(!controller.ready)
+                  }
+                  Button("Appearance", systemImage: "textformat.size") { panel = .appearance; closeSearch() }
+                  Button(searchVisible || panel != nil ? "Hide reader sidebar" : "Show reader sidebar", systemImage: "sidebar.right") {
+                      if searchVisible || panel != nil { closeSearch(); panel = nil }
+                      else { navigationTab = 0; panel = .contents }
+                  }
+              }
           }
           #endif
           if !isDesktop && usesSidebar && panel == .contents {
@@ -289,12 +310,16 @@ struct ReaderView: View {
             canTurn: controller.ready && showsPageTurnButtons && (isDesktop || (panel == nil && !searchVisible)),
             canSearch: controller.ready && ReaderCapabilities(format: prepared.book.format).textSearch,
             canBookmark: controller.ready,
+            canIncreaseText: prepared.book.format == .epub && model.preferences.fontSize < 36,
+            canDecreaseText: prepared.book.format == .epub && model.preferences.fontSize > 14,
             controls: { controller.controlsVisible.toggle() },
             previous: { controller.command?("previous", nil) },
             next: { controller.command?("next", nil) },
             contents: { navigationTab = 0; panel = panel == .contents ? nil : .contents },
             appearance: { panel = .appearance },
             search: { openSearch() },
+            increaseText: { model.preferences.fontSize = min(36, model.preferences.fontSize + 1) },
+            decreaseText: { model.preferences.fontSize = max(14, model.preferences.fontSize - 1) },
             bookmark: { if let bookmark = currentBookmark { removeBookmark(bookmark) } else { addBookmark() } },
             close: { if searchVisible { closeSearch() } else if panel != nil { panel = nil } else { closeReader() } }
         ))
@@ -328,7 +353,7 @@ struct ReaderView: View {
             #endif
         }
         .onChange(of: panel) { _, value in
-            if value != nil { if isDesktop { closeSearch() }; adjustment = nil; appearanceDetent = .medium; expandedAppearanceDetent = .medium }
+            if value != nil { if isDesktop && value != .search { closeSearch() }; adjustment = nil; appearanceDetent = .medium; expandedAppearanceDetent = .medium }
             controlsActivity = UUID(); pageNumber = controller.position.page + 1
         }
         .onChange(of: compactPanelHeight) { _, height in
@@ -377,7 +402,7 @@ struct ReaderView: View {
             HStack(spacing: 2) {
                         if showsPageTurnButtons {
                         Button { controller.command?("previous", nil) } label: { Image(systemName: "chevron.left").frame(width: isDesktop ? 32 : 44, height: readerControlHeight) }
-                            .accessibilityLabel("Previous page").keyboardShortcut(panel == nil && !searchVisible ? KeyboardShortcut(.leftArrow, modifiers: []) : nil)
+                            .accessibilityLabel("Previous page").keyboardShortcut(!isDesktop && panel == nil && !searchVisible ? KeyboardShortcut(.leftArrow, modifiers: []) : nil)
                         }
                         VStack(spacing: 0) {
                             Text(bookPageLabel)
@@ -398,7 +423,7 @@ struct ReaderView: View {
                         }.padding(.horizontal, 4).frame(maxWidth: .infinity)
                         if showsPageTurnButtons {
                         Button { controller.command?("next", nil) } label: { Image(systemName: "chevron.right").frame(width: isDesktop ? 32 : 44, height: readerControlHeight) }
-                            .accessibilityLabel("Next page").keyboardShortcut(panel == nil && !searchVisible ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
+                            .accessibilityLabel("Next page").keyboardShortcut(!isDesktop && panel == nil && !searchVisible ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
                         }
                         Rectangle().fill(readerSecondaryForeground.opacity(0.25)).frame(width: 1, height: 32).padding(.horizontal, 4)
                         Menu {
@@ -732,17 +757,17 @@ struct ReaderView: View {
                 Spacer()
                 Button { closeSearch(); panel = nil } label: { Image(systemName: "xmark") }
                     .buttonStyle(.plain).accessibilityLabel("Close reader sidebar")
-            }.padding(16)
+            }.frame(height: 44).padding(.horizontal, 16)
             Picker("Reader sidebar", selection: Binding<ReaderPanel>(
                 get: { searchVisible ? .search : panel ?? .contents },
                 set: { value in
                     if value == .search { openSearch() }
-                    else { closeSearch(); panel = value }
+                    else { panel = value; closeSearch() }
                 })) {
                 Text("Contents").tag(ReaderPanel.contents)
                 Text("Appearance").tag(ReaderPanel.appearance)
                 if ReaderCapabilities(format: prepared.book.format).textSearch { Text("Search").tag(ReaderPanel.search) }
-            }.pickerStyle(.segmented).padding(.horizontal, 12).padding(.bottom, 12)
+            }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 12).padding(.bottom, 12)
             Divider()
             if searchVisible {
                 HStack {
@@ -756,9 +781,12 @@ struct ReaderView: View {
                 searchResults
             } else if panel == .appearance {
                 if let adjustment { compactAdjustment(adjustment); Spacer() }
-                else { appearance }
-            } else { contents }
-        }.frame(maxHeight: .infinity, alignment: .top)
+                else { appearance.scrollContentBackground(.hidden) }
+            } else { contents.scrollContentBackground(.hidden) }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(8)
+            .glassEffect(readerGlass, in: RoundedRectangle(cornerRadius: 20))
+            .padding(8)
     }
     #endif
     private var searchField: some View {
@@ -867,11 +895,14 @@ struct ReaderView: View {
     }
     private func openSearch() {
         searchRevealTask?.cancel(); searchRevealTask = nil
-        if isDesktop { panel = nil; adjustment = nil }
         if !isDesktop { controller.command?("searchPresentation", true) }
-        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = true }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) {
+            if isDesktop { panel = .search; adjustment = nil }
+            searchVisible = true
+        }
     }
     private func closeSearch() {
+        if isDesktop && panel == .search { panel = nil }
         searchFocused = false
         controller.cancelSearch()
         withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = false }
@@ -1105,12 +1136,16 @@ struct ReaderSceneActions {
     var canTurn: Bool
     var canSearch: Bool
     var canBookmark: Bool
+    var canIncreaseText: Bool
+    var canDecreaseText: Bool
     var controls: @MainActor @Sendable () -> Void
     var previous: @MainActor @Sendable () -> Void
     var next: @MainActor @Sendable () -> Void
     var contents: @MainActor @Sendable () -> Void
     var appearance: @MainActor @Sendable () -> Void
     var search: @MainActor @Sendable () -> Void
+    var increaseText: @MainActor @Sendable () -> Void
+    var decreaseText: @MainActor @Sendable () -> Void
     var bookmark: @MainActor @Sendable () -> Void
     var close: @MainActor @Sendable () -> Void
 }
@@ -1134,6 +1169,8 @@ struct ReaderCommands: Commands {
             Button("Contents") { actions?.contents() }.keyboardShortcut("t", modifiers: [.command, .shift])
             Button("Appearance") { actions?.appearance() }.keyboardShortcut("a", modifiers: [.command, .shift])
             Button("Search Book") { actions?.search() }.keyboardShortcut("f", modifiers: .command).disabled(actions?.canSearch != true)
+            Button("Increase Text Size") { actions?.increaseText() }.keyboardShortcut("+", modifiers: .command).disabled(actions?.canIncreaseText != true)
+            Button("Decrease Text Size") { actions?.decreaseText() }.keyboardShortcut("-", modifiers: .command).disabled(actions?.canDecreaseText != true)
             Button("Toggle Bookmark") { actions?.bookmark() }.keyboardShortcut("d", modifiers: .command).disabled(actions?.canBookmark != true)
             Divider()
             #if os(macOS)

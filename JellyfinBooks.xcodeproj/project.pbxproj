@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		FABC44000000000000000001 /* ReaderTrackpadGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC44000000000000000002 /* ReaderTrackpadGesture.swift */; };
 		089A42F2B8EBF9E401964C28 /* App/Core/ArchiveExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAC6D9E8B5EB33CF52D0A8B7 /* App/Core/ArchiveExtractor.swift */; };
 		0C7E9464BF3BB95FB241A505 /* App/Resources/Licenses in Resources */ = {isa = PBXBuildFile; fileRef = 6D5D9004797377E10C60545A /* App/Resources/Licenses */; };
 		206D1605B41F21BFCBED5D82 /* JellyfinAPI in Frameworks */ = {isa = PBXBuildFile; productRef = D1D50749973C227EB7BE9254 /* JellyfinAPI */; };
@@ -34,6 +35,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		FABC44000000000000000002 /* ReaderTrackpadGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/ReaderTrackpadGesture.swift; sourceTree = SOURCE_ROOT; };
 		3F60D54AF9989335D88A0458 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration/Signing.xcconfig; sourceTree = SOURCE_ROOT; };
 		0803331CEF264E2B923DF446 /* App/Jellyfin/JellyfinProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Jellyfin/JellyfinProvider.swift; sourceTree = SOURCE_ROOT; };
 		20CAA4801EEF50C02A7BE9D0 /* App/Resources/AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = App/Resources/AppIcon.icon; sourceTree = SOURCE_ROOT; };
@@ -91,6 +93,7 @@
 				CD0EB7AE07BC73E88909A89D /* App/Core/CatalogPresentation.swift */,
 				E7878CA23EEA7586044FB612 /* App/Core/Keychain.swift */,
 				B303777A1DB77DF7A06D9731 /* App/Core/Models.swift */,
+				FABC44000000000000000002 /* App/Core/ReaderTrackpadGesture.swift */,
 				0803331CEF264E2B923DF446 /* App/Jellyfin/JellyfinProvider.swift */,
 				916473D507AB3C8C8F224002 /* App/JellyfinBooksApp.swift */,
 				940772012351B1911C45483B /* App/Readers/ComicSurface.swift */,
@@ -193,6 +196,7 @@
 				30BC9ECD161ED623072689C7 /* App/Core/CatalogPresentation.swift in Sources */,
 				ADB32512B426188DE4612256 /* App/Core/Keychain.swift in Sources */,
 				356B7498ED5E3EDF644EACF6 /* App/Core/Models.swift in Sources */,
+				FABC44000000000000000001 /* App/Core/ReaderTrackpadGesture.swift in Sources */,
 				7D7C5273FC545281E8C38BE8 /* App/Jellyfin/JellyfinProvider.swift in Sources */,
 				E0E24310847DC3AE09047858 /* App/JellyfinBooksApp.swift in Sources */,
 				9B0BFAF11ED73017B4D11848 /* App/Readers/ComicSurface.swift in Sources */,

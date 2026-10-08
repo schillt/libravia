@@ -143,6 +143,7 @@ struct MacReaderSearchField: NSViewRepresentable {
             super.viewDidMoveToWindow()
             guard let window, !requestedInitialFocus else { return }
             requestedInitialFocus = true
+            if window.makeFirstResponder(self) { return }
             // Wait until SwiftUI has attached the full search overlay and AppKit can
             // assign its field editor. This happens once, never on binding updates.
             DispatchQueue.main.async { [weak self, weak window] in
@@ -151,5 +152,66 @@ struct MacReaderSearchField: NSViewRepresentable {
             }
         }
     }
+}
+#endif
+
+#if os(macOS)
+struct MacReaderInput: NSViewRepresentable {
+    var canTurn: () -> Bool
+    var turn: (String) -> Void
+    func makeNSView(context: Context) -> MacReaderInputRegion { MacReaderInputRegion() }
+    func updateNSView(_ view: MacReaderInputRegion, context: Context) {
+        view.canTurnPage = canTurn; view.turnPage = turn
+    }
+    static func dismantleNSView(_ view: MacReaderInputRegion, coordinator: ()) { view.removeMonitor() }
+}
+
+/// Local to this app and this visible reader window. Sidebar events and native
+/// text editing pass through; no system-wide event monitor or gesture delegate.
+@MainActor final class MacReaderInputRegion: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    var canTurnPage: (() -> Bool)?
+    var turnPage: ((String) -> Void)?
+    private var inputMonitor: Any?
+    private var trackpadGesture = ReaderTrackpadGesture()
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeMonitor()
+        guard window != nil else { return }
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { [weak self] event in
+            MainActor.assumeIsolated { self?.handle(event) ?? event }
+        }
+    }
+    private func handle(_ event: NSEvent) -> NSEvent? {
+        guard let window, event.window === window, window.isKeyWindow, canTurnPage?() == true else { trackpadGesture.reset(); return event }
+        if event.type == .keyDown {
+            guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                  event.keyCode == 123 || event.keyCode == 124 else { return event }
+            if let editor = window.firstResponder as? NSTextView, editor.isEditable { return event }
+            if window.firstResponder is NSControl { return event }
+            turnPage?(event.keyCode == 123 ? "previous" : "next")
+            return nil
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        guard visibleRect.contains(point), event.hasPreciseScrollingDeltas,
+              event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { trackpadGesture.reset(); return event }
+        let phase: ReaderTrackpadGesture.Phase
+        if !event.momentumPhase.isEmpty { phase = .momentum }
+        else if event.phase.contains(.began) { phase = .began }
+        else if event.phase.contains(.cancelled) { phase = .cancelled }
+        else if event.phase.contains(.ended) { phase = .ended }
+        else if event.phase.contains(.changed) { phase = .changed }
+        else { return event }
+        // Follow physical finger direction with either system scrolling setting.
+        let physicalX = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        let result = trackpadGesture.update(x: physicalX, y: event.scrollingDeltaY, phase: phase)
+        if let direction = result.direction { turnPage?(direction) }
+        return result.consume ? nil : event
+    }
+    func removeMonitor() {
+        if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
+        inputMonitor = nil; trackpadGesture.reset()
+    }
+    deinit { if let inputMonitor { NSEvent.removeMonitor(inputMonitor) } }
 }
 #endif
