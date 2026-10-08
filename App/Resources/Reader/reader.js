@@ -11,7 +11,7 @@ function preferences(p) {
   const colors = themes[p.theme] || themes.light;
   document.body.style.background = colors[0];
   rendition.themes.default({'body':{'color':colors[1]+' !important','background':colors[0]+' !important','font-family':p.font+' !important','font-size':p.fontSize+'px !important','line-height':p.lineHeight+' !important','padding-top':'0 !important','padding-bottom':'0 !important','margin-top':'0 !important','margin-bottom':'0 !important','padding-left':p.margin+'px !important','padding-right':p.margin+'px !important'},'a':{'color':'inherit'}});
-  rendition.flow(p.scrolling ? 'scrolled-doc' : 'paginated');
+  rendition.flow(p.scrolling ? 'scrolled-continuous' : 'paginated');
 }
 // One layout operation owns relocation suppression at a time. Requests arriving
 // during display are coalesced and applied before reporting positions resumes.
@@ -267,7 +267,10 @@ window.readerCommand = async ({name,value}) => {
         viewportSize = {width:Math.max(1, Math.floor(bounds.width)), height:Math.max(1, Math.floor(bounds.height))};
         // Numeric dimensions disable EPUB.js's window-resize listener. Keyboard
         // focus may resize the window without changing the document's layout box.
-        rendition = book.renderTo('reader',{...viewportSize,resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false,flow:value.preferences.scrolling?'scrolled-doc':'paginated'});
+        // The continuous manager appends adjacent spine sections as the reader
+        // scrolls. Keep it for both flows so mode changes preserve one rendition,
+        // its hooks, and exact CFI instead of reverting to single-chapter scrolling.
+        rendition = book.renderTo('reader',{...viewportSize,manager:'continuous',resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false,flow:value.preferences.scrolling?'scrolled-continuous':'paginated'});
         // Strip active and remote content before any chapter is rendered.
         book.spine.hooks.content.register((document) => {
           document.querySelectorAll('script,object,embed,iframe,form,base').forEach(node => node.remove());
