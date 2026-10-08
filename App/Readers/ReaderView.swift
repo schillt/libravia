@@ -264,11 +264,6 @@ struct ReaderView: View {
           .statusBarHidden(pageContainsInfo && !controller.controlsVisible && !voiceOver)
           #endif
           #if os(macOS)
-          .inspector(isPresented: Binding(get: { readerChromeVisible && (searchVisible || panel != nil) }, set: { visible in
-              if !visible { closeSearch(); panel = nil }
-          })) {
-              macSidebar.inspectorColumnWidth(min: 300, ideal: 340, max: 420)
-          }
           .toolbarVisibility(readerChromeVisible ? .visible : .hidden, for: .windowToolbar)
           .toolbar {
               ToolbarItemGroup(placement: .primaryAction) {
@@ -281,6 +276,13 @@ struct ReaderView: View {
                       else { navigationTab = 0; panel = .contents }
                   }
               }
+          }
+          #endif
+          #if os(macOS)
+          if readerChromeVisible && (searchVisible || panel != nil) {
+              // Reserve reading width without NSSplitView's full-height divider.
+              // The glass panel floats on the same canvas and never covers text.
+              macSidebar.frame(width: min(340, max(280, geometry.size.width * 0.34)))
           }
           #endif
           if !isDesktop && usesSidebar && panel == .contents {
@@ -623,8 +625,17 @@ struct ReaderView: View {
 
     }
     private var appearance: some View {
+        #if os(macOS)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) { appearanceFields }
+                .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+        }
+        #else
+        Form { appearanceFields }.formStyle(.grouped)
+        #endif
+    }
+    @ViewBuilder private var appearanceFields: some View {
         @Bindable var model = model
-        return Form {
             if !isDesktop { Section("Tap to turn pages") {
                 adjustmentButton(.edgeWidth)
                 Text("Tap the left edge for the previous page, the right edge for the next page, and the center for controls. While scrolling an EPUB or zoomed in, taps show controls.").font(.caption).foregroundStyle(.secondary)
@@ -664,7 +675,6 @@ struct ReaderView: View {
                 Toggle("Keep progress visible", isOn: $keepProgressVisible)
                 Text(isDesktop ? "Use the Reader menu or toolbar to manage reading controls." : "Show controls with a tap in the center of the page.").font(.caption).foregroundStyle(.secondary)
             }
-        }.formStyle(.grouped)
     }
     private var showsPageTurnButtons: Bool {
         prepared.book.format != .epub || !model.preferences.scrolling
@@ -782,11 +792,12 @@ struct ReaderView: View {
             } else { contents.scrollContentBackground(.hidden) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(8)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
+            .glassEffect(reduceTransparency || contrast == .increased ? .regular : .clear, in: RoundedRectangle(cornerRadius: 20))
             .padding(8)
             // Continue the publication canvas behind the glass instead of the inspector
             // host's contrasting system background. Lists/forms hide their own fill.
             .background(readerBackground.ignoresSafeArea())
+            .environment(\.colorScheme, darkReader ? .dark : .light)
     }
     #endif
     private var searchField: some View {
