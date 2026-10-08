@@ -160,9 +160,10 @@ struct MacReaderInput: NSViewRepresentable {
     var chromeVisible: Bool
     var canTurn: () -> Bool
     var turn: (String) -> Void
+    var trackpad: (([String: Any]) -> Void)? = nil
     func makeNSView(context: Context) -> MacReaderInputRegion { MacReaderInputRegion() }
     func updateNSView(_ view: MacReaderInputRegion, context: Context) {
-        view.canTurnPage = canTurn; view.turnPage = turn
+        view.canTurnPage = canTurn; view.turnPage = turn; view.trackpadPage = trackpad
         view.chromeVisible = chromeVisible; view.updateChrome()
     }
     static func dismantleNSView(_ view: MacReaderInputRegion, coordinator: ()) { view.removeMonitor() }
@@ -174,6 +175,7 @@ struct MacReaderInput: NSViewRepresentable {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     var canTurnPage: (() -> Bool)?
     var turnPage: ((String) -> Void)?
+    var trackpadPage: (([String: Any]) -> Void)?
     var chromeVisible = true
     func updateChrome() {
         guard let window else { return }
@@ -185,6 +187,7 @@ struct MacReaderInput: NSViewRepresentable {
     }
     private var inputMonitor: Any?
     private var trackpadGesture = ReaderTrackpadGesture()
+    private var trackpadInteraction = ReaderTrackpadInteraction()
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         removeMonitor()
@@ -195,7 +198,7 @@ struct MacReaderInput: NSViewRepresentable {
         }
     }
     private func handle(_ event: NSEvent) -> NSEvent? {
-        guard let window, event.window === window, window.isKeyWindow, canTurnPage?() == true else { trackpadGesture.reset(); return event }
+        guard let window, event.window === window, window.isKeyWindow, canTurnPage?() == true else { trackpadGesture.reset(); trackpadInteraction.reset(); return event }
         if event.type == .keyDown {
             guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
                   event.keyCode == 123 || event.keyCode == 124 else { return event }
@@ -206,7 +209,7 @@ struct MacReaderInput: NSViewRepresentable {
         }
         let point = convert(event.locationInWindow, from: nil)
         guard visibleRect.contains(point), event.hasPreciseScrollingDeltas,
-              event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { trackpadGesture.reset(); return event }
+              event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { trackpadGesture.reset(); trackpadInteraction.reset(); return event }
         let phase: ReaderTrackpadGesture.Phase
         if !event.momentumPhase.isEmpty { phase = .momentum }
         else if event.phase.contains(.began) { phase = .began }
@@ -216,14 +219,37 @@ struct MacReaderInput: NSViewRepresentable {
         else { return event }
         // Follow physical finger direction with either system scrolling setting.
         let physicalX = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        if let trackpadPage {
+            let result = trackpadInteraction.update(x: physicalX, y: event.scrollingDeltaY,
+                                                    timestamp: event.timestamp, width: bounds.width, phase: phase)
+            if let update = result.update {
+                trackpadPage(["phase": update.phase, "translation": update.translation,
+                              "velocity": update.velocity, "commit": update.commit])
+            }
+            return result.consume ? nil : event
+        }
         let result = trackpadGesture.update(x: physicalX, y: event.scrollingDeltaY, phase: phase)
         if let direction = result.direction { turnPage?(direction) }
         return result.consume ? nil : event
     }
     func removeMonitor() {
         if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
-        inputMonitor = nil; trackpadGesture.reset()
+        inputMonitor = nil; trackpadGesture.reset(); trackpadInteraction.reset()
     }
     deinit { if let inputMonitor { NSEvent.removeMonitor(inputMonitor) } }
+}
+#endif
+
+#if os(macOS)
+/// System backdrop samples wallpaper/other windows only inside the floating panel.
+struct MacReaderPanelBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+    func updateNSView(_ view: NSVisualEffectView, context: Context) { }
 }
 #endif

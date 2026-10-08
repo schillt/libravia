@@ -18,6 +18,8 @@ function setPageChrome(value = {}) {
   const bottom = value.enabled ? Math.max(0, value.bottom || 0) : 0;
   reader.style.top = top + 'px'; reader.style.bottom = bottom + 'px';
   reader.style.height = `calc(100% - ${top + bottom}px)`;
+  reader.style.maskImage = value.softEdges ? 'linear-gradient(to bottom, transparent, black 8px, black calc(100% - 8px), transparent)' : '';
+  reader.style.webkitMaskImage = reader.style.maskImage;
   header.style.height = top + 'px'; footer.style.height = bottom + 'px';
   header.style.fontSize = footer.style.fontSize = Math.max(12, value.textSize || 12) + 'px';
   header.hidden = !value.enabled || !value.showChapter;
@@ -233,6 +235,12 @@ function queueLayout(p, resize = false) {
     await precedingTurn.catch(() => {});
     restoring = true;
     try {
+      if (previewAnchor) {
+        const anchor = previewAnchor;
+        await withPaginationTimeout(rendition.display(anchor));
+        previewAnchor = null; previewing = false; current = anchor;
+        send('turnCancelled');
+      }
       while (pendingPreferences || pendingResize) {
         const p = pendingPreferences, size = pendingViewport;
         pendingPreferences = undefined; pendingResize = false; pendingViewport = undefined;
@@ -426,14 +434,14 @@ function turn(direction, preview = false, request = null) {
     await precedingLayout;
     if (scrolling) return;
     const advance = async () => { await withPaginationTimeout(direction === 'next' ? rendition.next() : rendition.prev()); updatePageInformation(rendition.location); };
-    if (nativePageTurns || pageTransition === 'instant' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || typeof document.startViewTransition !== 'function') {
+    if (preview || nativePageTurns || pageTransition === 'instant' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || typeof document.startViewTransition !== 'function') {
       await advance();
       clearChapterSelections();
-      if (nativePageTurns) {
+      if (preview || nativePageTurns) {
         // EPUB.js can settle its relocation promise before WebKit paints the
         // new frame. The native incoming snapshot must see that new frame.
         await nextPaint();
-        send(preview ? 'previewReady' : 'turned',{direction,request});
+        send(preview ? 'previewReady' : 'turned',{direction,request,changed:!preview || rendition.location?.start?.cfi !== previewAnchor});
       }
       return;
     }

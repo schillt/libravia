@@ -94,6 +94,16 @@ import WebKit
                       await window.readerCommand({name:'previous'});await pause(120);
                       assert(current!==saved,'Page commands remain active after inspector reflow');
                     }
+                    await window.readerCommand({name:'layoutPage',value:0});await pause(120);
+                    const original=current;
+                    await window.readerCommand({name:'previewTurn',value:'next'});await pause(120);
+                    assert(current===original,'Mac peek must not persist provisional progress');
+                    assert(rendition.location.start.cfi!==original,'Mac peek renders genuine future content');
+                    await window.readerCommand({name:'cancelTurn'});await pause(120);
+                    assert(current===original && rendition.location.start.cfi===original,'Reversed Mac peek restores its exact source CFI');
+                    await window.readerCommand({name:'previewTurn',value:'next'});
+                    await window.readerCommand({name:'commitTurn'});await pause(120);
+                    assert(current!==original,'Released Mac peek commits actual reading progress');
                     navigationTitles.set(1,'Chapter 7');
                     probePreferences.scrolling=true;
                     await queueLayout(probePreferences);
@@ -102,7 +112,7 @@ import WebKit
                     assert(chapterView.element.querySelector('.reader-chapter-break')?.textContent==='Chapter 7','Visible chapter boundary uses the navigation title');
                     assert(navigationTitles.get(rendition.location.start.index)==='Chapter 7','Current chapter follows content rather than its ordinal');
                     assert(layoutPages.length===0,'Scrolling cannot retain an obsolete page map');
-                    return 'Consecutive pages, exact scrub, type/viewport recount, position preservation, inspector reflow/turn ordering and chapter boundaries passed';
+                    return 'Consecutive pages, exact scrub, type/viewport recount, position preservation, inspector reflow/turn ordering, provisional Mac peeks and chapter boundaries passed';
                     """, arguments: [:], in: nil, contentWorld: .page)
                     finish(true, result as? String ?? "Renderer checks passed")
                 } catch {

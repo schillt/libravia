@@ -24,6 +24,7 @@ struct ReaderChapter: Identifiable {
 }
 @MainActor @Observable final class ReaderController {
     var position: ReadingPosition
+    var viewportInsets = EdgeInsets()
     var pageCount = 0
     var currentChapter: String?
     var chapterTitle = "Reading"
@@ -110,7 +111,8 @@ struct ReaderView: View {
     private func pageChrome(safeInsets: EdgeInsets) -> ReaderPageChrome {
         ReaderPageChrome(enabled: pageContainsInfo, showChapter: keepTitleVisible, showProgress: keepProgressVisible,
                          top: headerGutter + safeInsets.top, bottom: isDesktop ? 28 : footerGutter + safeInsets.bottom,
-                         textSize: max(12, progressLineHeight - 4))
+                         textSize: max(12, progressLineHeight - 4),
+                         softEdges: !isDesktop && model.preferences.pageTransition == "curl" && !reduceTransparency && contrast != .increased)
     }
     private var readerControlHeight: Double { isDesktop ? 36 : 52 }
     private func closeReader() {
@@ -128,14 +130,15 @@ struct ReaderView: View {
     var body: some View {
         @Bindable var model = model
         GeometryReader { geometry in
-          let pageInsets = !isDesktop && pageContainsInfo ? geometry.safeAreaInsets : EdgeInsets()
+          let pageInsets = !isDesktop && pageContainsInfo ? controller.viewportInsets : EdgeInsets()
           let usesSidebar = (isDesktop || geometry.size.width >= 900) && !dynamicTypeSize.isAccessibilitySize
           HStack(spacing: 0) {
           NavigationStack {
             readerSurface(chrome: pageChrome(safeInsets: pageInsets))
                 #if os(macOS)
                 .background(MacReaderInput(chromeVisible: readerChromeVisible, canTurn: { controller.ready && showsPageTurnButtons },
-                                           turn: { controller.command?($0, nil) }))
+                                           turn: { controller.command?($0, nil) },
+                                           trackpad: prepared.book.format == .epub ? { controller.command?("trackpad", $0) } : nil))
                 #endif
                 .mask {
                     if prepared.book.format == .epub && model.preferences.scrolling && !reduceTransparency && contrast != .increased {
@@ -260,7 +263,6 @@ struct ReaderView: View {
             }
           }
           #if os(iOS)
-          .ignoresSafeArea(.container, edges: pageContainsInfo ? .vertical : [])
           .statusBarHidden(pageContainsInfo && !controller.controlsVisible && !voiceOver)
           #endif
           #if os(macOS)
@@ -302,6 +304,9 @@ struct ReaderView: View {
           }
           .onChange(of: usesSidebar, initial: true) { _, value in wideContents = value }
         }
+        #if os(iOS)
+        .ignoresSafeArea(.container, edges: pageContainsInfo ? .vertical : [])
+        #endif
         .focusedSceneValue(\.readerActions, ReaderSceneActions(
             hasPanel: searchVisible || panel != nil,
             canTurn: controller.ready && showsPageTurnButtons && (isDesktop || (panel == nil && !searchVisible)),
@@ -792,6 +797,11 @@ struct ReaderView: View {
             } else { contents.scrollContentBackground(.hidden) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(8)
+            .background {
+                if !reduceTransparency && contrast != .increased {
+                    MacReaderPanelBackdrop().clipShape(RoundedRectangle(cornerRadius: 20))
+                }
+            }
             .glassEffect(reduceTransparency || contrast == .increased ? .regular : .clear, in: RoundedRectangle(cornerRadius: 20))
             .padding(8)
             // Continue the publication canvas behind the glass instead of the inspector

@@ -17,6 +17,7 @@ struct ReaderPageChrome: Codable, Equatable {
     var top: Double = 0
     var bottom: Double = 0
     var textSize: Double = 12
+    var softEdges = false
 }
 
 struct EPUBSurface: EPUBViewRepresentable {
@@ -58,7 +59,7 @@ struct EPUBSurface: EPUBViewRepresentable {
     #if os(macOS)
     func makeNSView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
     func updateNSView(_ web: WKWebView, context: Context) { context.coordinator.pageChrome(chrome); context.coordinator.preferences(preferences) }
-    static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) { web.configuration.userContentController.removeScriptMessageHandler(forName: "reader"); coordinator.controller.command = nil }
+    static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) { web.configuration.userContentController.removeScriptMessageHandler(forName: "reader"); coordinator.stopMacTrackpad(); coordinator.controller.command = nil }
     #else
     func makeUIViewController(context: Context) -> ReaderHostController {
         let web = makeWebView(context.coordinator)
@@ -80,6 +81,89 @@ struct EPUBSurface: EPUBViewRepresentable {
         var latestPreferences = ReaderPreferences()
         var latestChrome = ReaderPageChrome()
         var loaded = false
+        #if os(macOS)
+        private final class MacTrackpadTurn {
+            let id = UUID()
+            let direction: String
+            var translation = 0.0
+            var ended = false, commit = false, ready = false, previewStarted = false, boundary = false
+            var image: MacPagePicture?
+            init(direction: String) { self.direction = direction }
+        }
+        private var macTurn: MacTrackpadTurn?
+        private var macWaitingCommands: [(String, Any?)] = []
+        private func trackpad(_ value: [String: Any]) {
+            guard let phase = value["phase"] as? String, let translation = value["translation"] as? Double,
+                  translation.isFinite, let web, controller.ready, !latestPreferences.scrolling else { return }
+            if phase == "begin" {
+                if let previous = macTurn {
+                    guard previous.ended && previous.ready && previous.commit && !previous.boundary else { return }
+                    previous.image?.removeFromSuperview(); previous.image = nil; macTurn = nil
+                }
+                let stroke = MacTrackpadTurn(direction: translation < 0 ? "next" : "previous")
+                stroke.translation = translation; macTurn = stroke
+                let size = web.bounds.size
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                    guard let self, self.macTurn === stroke, !stroke.ready else { return }
+                    self.cancelMacTrackpad()
+                }
+                web.evaluateJavaScript("window.readerCanTurn(\(web.bounds.width / 2),\(web.bounds.height / 2))") { [weak self, weak web] allowed, _ in
+                    guard let self, let web, self.macTurn === stroke else { return }
+                    guard allowed as? Bool == true else { self.macTurn = nil; return }
+                    let configuration = WKSnapshotConfiguration(); configuration.rect = web.bounds
+                    web.takeSnapshot(with: configuration) { [weak self, weak web] picture, _ in
+                        guard let self, let web, self.macTurn === stroke else { return }
+                        guard let picture, web.bounds.size == size else { self.macTurn = nil; return }
+                        if stroke.ended && !stroke.commit { self.macTurn = nil; return }
+                        let overlay = MacPagePicture(); overlay.image = picture
+                        overlay.imageScaling = .scaleAxesIndependently; overlay.frame = web.bounds
+                        web.addSubview(overlay); stroke.image = overlay; stroke.previewStarted = true
+                        self.sendRaw("previewTurn", stroke.direction)
+                    }
+                }
+            } else if let stroke = macTurn {
+                stroke.translation = translation
+                if phase == "end" { stroke.ended = true; stroke.commit = value["commit"] as? Bool == true }
+                updateMacTrackpad(stroke)
+            }
+        }
+        private func updateMacTrackpad(_ stroke: MacTrackpadTurn) {
+            guard macTurn === stroke, stroke.ready, let web, let image = stroke.image else { return }
+            if stroke.ended {
+                let commit = stroke.commit && !stroke.boundary
+                sendRaw(commit ? "commitTurn" : "cancelTurn", nil)
+                let origin = NSPoint(x: commit ? web.bounds.width * (stroke.direction == "next" ? -1 : 1) : 0, y: 0)
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.14
+                    image.animator().setFrameOrigin(origin)
+                } completionHandler: { [weak self, weak image] in
+                    Task { @MainActor in
+                        guard let self, self.macTurn === stroke else { return }
+                        if commit { image?.removeFromSuperview(); stroke.image = nil; self.macTurn = nil }
+                        // Cancellation removes its cover only after exact CFI restoration.
+                    }
+                }
+            } else {
+                let width = web.bounds.width
+                let translation = stroke.translation * (stroke.boundary ? 0.12 : 1)
+                let x = stroke.direction == "next" ? min(0, max(-width, translation)) : max(0, min(width, translation))
+                image.setFrameOrigin(NSPoint(x: x, y: 0))
+            }
+        }
+        fileprivate func stopMacTrackpad() {
+            macTurn?.image?.removeFromSuperview(); macTurn?.image = nil; macTurn = nil; macWaitingCommands.removeAll()
+        }
+        private func drainMacCommands() {
+            let waiting = macWaitingCommands; macWaitingCommands.removeAll()
+            for (command, value) in waiting { sendRaw(command, value) }
+        }
+        fileprivate func cancelMacTrackpad() {
+            guard let stroke = macTurn else { return }
+            stroke.ended = true; stroke.commit = false
+            if stroke.previewStarted { sendRaw("cancelTurn", nil) }
+            else { stroke.image?.removeFromSuperview(); stroke.image = nil; macTurn = nil }
+        }
+        #endif
         #if os(iOS)
         weak var host: UIView?
         weak var hostController: ReaderHostController?
@@ -108,7 +192,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         func canCurl(at point: CGPoint) -> Bool {
             guard controller.ready, !searchPresented, !curlTurning, turnToken == nil, pendingCard == nil, !textSelectionActive, let web,
                   !curlBlockedRegions.contains(where: { $0.contains(point) }) else { return false }
-            guard contentBounds.contains(point) else { return false }
+            guard web.bounds.contains(point) else { return false }
             return cachedAdjacentPage("previous") != nil || cachedAdjacentPage("next") != nil
         }
         func resumeQueuedTurns() { drainTurns() }
@@ -514,6 +598,9 @@ struct EPUBSurface: EPUBViewRepresentable {
         private func chromeObject() -> Any { (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(latestChrome))) ?? [:] }
         func preferences(_ preferences: ReaderPreferences) {
             guard preferences != latestPreferences else { return }
+            #if os(macOS)
+            cancelMacTrackpad()
+            #endif
             latestPreferences = preferences
             #if os(iOS)
             abortInteractive(); resetCurl(); invalidateSnapshots()
@@ -535,6 +622,13 @@ struct EPUBSurface: EPUBViewRepresentable {
             value["pageChrome"] = chromeObject(); return value
         }
         func send(_ command: String, _ value: Any?) {
+            #if os(macOS)
+            if command == "trackpad", let value = value as? [String: Any] { trackpad(value); return }
+            if macTurn != nil && ["next", "previous", "seek", "location", "layoutPage"].contains(command) {
+                macWaitingCommands.append((command, value)); cancelMacTrackpad()
+                if macTurn == nil { drainMacCommands() }; return
+            }
+            #endif
             #if os(iOS)
             if command == "searchPresentation", let active = value as? Bool {
                 searchPresented = active
@@ -644,6 +738,12 @@ struct EPUBSurface: EPUBViewRepresentable {
                     finishTurn(direction: value["direction"] as? String ?? "next", animated: true)
                 }
             #endif
+            #if os(macOS)
+            case "previewReady":
+                if let stroke = macTurn { stroke.ready = true; stroke.boundary = value["changed"] as? Bool == false; updateMacTrackpad(stroke) }
+            case "turnCancelled":
+                macTurn?.image?.removeFromSuperview(); macTurn?.image = nil; macTurn = nil; drainMacCommands()
+            #endif
             case "position":
                 guard let fraction = value["fraction"] as? Double, fraction.isFinite else { return }
                 controller.currentChapter = value["href"] as? String
@@ -682,6 +782,9 @@ struct EPUBSurface: EPUBViewRepresentable {
             case "searchError": if value["id"] as? String == controller.searchID { controller.searching = false; controller.searchState = .failed }
             case "navigationError": controller.returnPosition = nil; controller.navigationError = true
             case "error":
+                #if os(macOS)
+                stopMacTrackpad()
+                #endif
                 #if os(iOS)
                 abortInteractive(); resetCurl()
                 finishTurn(direction: "next", animated: false)
@@ -700,6 +803,9 @@ struct EPUBSurface: EPUBViewRepresentable {
             #endif
             controller.error = "The local reader could not be loaded." }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            #if os(macOS)
+            stopMacTrackpad()
+            #endif
             #if os(iOS)
             if webView === snapshotWeb { invalidateSnapshots(); releaseSnapshotRenderer(); return }
             stopSnapshots(); hostController?.resetCurlSurface(rebuild: false)
@@ -760,6 +866,12 @@ struct EPUBSurface: EPUBViewRepresentable {
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        if let insets = view.window?.safeAreaInsets, let controller = coordinator?.controller {
+            let value = EdgeInsets(top: insets.top, leading: insets.left, bottom: insets.bottom, trailing: insets.right)
+            if controller.viewportInsets != value {
+                DispatchQueue.main.async { [weak controller] in controller?.viewportInsets = value }
+            }
+        }
         guard view.bounds.size != lastSize, view.bounds.width > 0 else { return }
         lastSize = view.bounds.size; coordinator?.viewportDidChange()
     }
@@ -916,5 +1028,12 @@ extension EPUBSurface.Coordinator: UIGestureRecognizerDelegate {
         if gestureRecognizer === pagePan, otherGestureRecognizer === web?.scrollView.panGestureRecognizer { return false }
         return true
     }
+}
+#endif
+
+#if os(macOS)
+/// The preview decorates the live WebKit surface without intercepting clicks.
+private final class MacPagePicture: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 #endif

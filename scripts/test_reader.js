@@ -226,12 +226,12 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.equal(messages.filter(m=>m.kind==='error').length,1,'Asynchronous layout error handled');
  assert.equal(vm.runInContext('restoring',context),false,'Failed layout releases suppression');
  context.mockRendition.location={start:{cfi:'anchor',href:'chapter.xhtml',displayed:{page:2,total:10}}};
- vm.runInContext('nativePageTurns=true',context);
+ vm.runInContext('nativePageTurns=false',context);
  context.mockRendition.next=async()=>{turns++;context.mockRendition.location.start.cfi='previewed';};
  context.mockRendition.display=async cfi=>{context.mockRendition.location.start.cfi=cfi;};
  const savedPositions=messages.filter(m=>m.kind==='position').length;
  await context.window.readerCommand({name:'previewTurn',value:'next'});
- assert.equal(messages.at(-1).kind,'previewReady','Interactive turn waits for the incoming page');
+ assert.equal(messages.at(-1).kind,'previewReady','Mac provisional turn reports after the incoming page without a decorative transition');
  assert.equal(context.window.readerCanTurn(30,40),false,'A second swipe cannot interrupt a preview');
  assert.equal(messages.filter(m=>m.kind==='position').length,savedPositions,'Provisional page is not persisted');
  await context.window.readerCommand({name:'cancelTurn'});
