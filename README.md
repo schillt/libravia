@@ -1,5 +1,7 @@
 # LibraVia
 
+The [roadmap to 1.0](docs/ROADMAP.md) defines the next milestones, including native reading, dependable offline books, multiple sources, annotations, and supported-server sync. These are planned outcomes; the current foundation's capabilities and limitations are listed below. Contributors and agents should start with [AGENTS.md](AGENTS.md), [architecture and ADRs](docs/ARCHITECTURE.md), and the [development workflow](docs/DEVELOPMENT.md).
+
 LibraVia is a native SwiftUI reader for DRM-free EPUB, PDF, and CBZ books from a user-selected Jellyfin server. It targets iPhone, iPad, and native Mac on Apple OS 27 with Jellyfin 12. Audiobooks, additional providers, and older-platform compatibility are outside this MVP.
 
 ## Get started
