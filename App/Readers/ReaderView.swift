@@ -184,7 +184,7 @@ struct ReaderView: View {
                                         .lineLimit(1).transition(.opacity)
                                 }
                                 Text(chapterHeaderLabel).font(.caption.weight(.semibold)).lineLimit(1)
-                                    .opacity(pageContainsInfo && !controller.controlsVisible && !voiceOver ? 0 : 1)
+                                    .opacity(pageContainsInfo && (isDesktop || (!controller.controlsVisible && !voiceOver)) ? 0 : 1)
                                 if controller.controlsVisible, !bookmarkFeedback.isEmpty {
                                     Text(bookmarkFeedback).font(.caption2).foregroundStyle(readerSecondaryForeground).lineLimit(1)
                                 }
@@ -227,7 +227,7 @@ struct ReaderView: View {
                             .accessibilityHidden(pageContainsInfo || searchVisible || !keepProgressVisible || readerChromeVisible)
                     }
                 }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: controller.controlsVisible)
+            .animation(isDesktop || reduceMotion ? nil : .easeInOut(duration: 0.25), value: controller.controlsVisible)
             .navigationTitle(prepared.book.title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -288,6 +288,7 @@ struct ReaderView: View {
           }
           #endif
           #if os(macOS)
+          Group {
           if macSidebarVisible {
               // Reserve reading width without NSSplitView's full-height divider.
               // The glass panel floats on the same canvas and never covers text.
@@ -296,6 +297,12 @@ struct ReaderView: View {
                   .layoutPriority(1)
                   .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94, anchor: .topTrailing)).combined(with: .move(edge: .trailing)))
           }
+          }
+          // Animate the glass only. The outer reservation snaps to its final
+          // width so WebKit receives one resize instead of every spring frame.
+          .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: macSidebarVisible)
+          .frame(width: macSidebarVisible ? 340 : 0)
+          .clipped()
           #endif
           if !isDesktop && usesSidebar && panel == .contents {
               Divider()
@@ -312,8 +319,6 @@ struct ReaderView: View {
               .background(.background)
           }
           }
-          // Animate only opening/closing, never changes inside a visible panel.
-          .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.92), value: macSidebarVisible)
           .onChange(of: usesSidebar, initial: true) { _, value in wideContents = value }
         }
         #if os(iOS)

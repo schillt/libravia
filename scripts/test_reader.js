@@ -311,7 +311,7 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
    };
    const flowContext = {
      window:{webkit:{messageHandlers:{reader:{postMessage:m=>flowMessages.push(m)}}}},
-     document:{body:{style:{}},getElementById:()=>({style:{},getBoundingClientRect:()=>({left:0,top:0,width:375,height:700})})},
+     document:{documentElement:{dataset:{}},body:{style:{}},getElementById:()=>({style:{},getBoundingClientRect:()=>({left:0,top:0,width:375,height:700})})},
      ePub:()=>publication,
      ResizeObserver:class {observe(){} disconnect(){}},
      setTimeout:callback=>{flowTimers.set(1,callback);return 1;},clearTimeout:id=>flowTimers.delete(id),
@@ -382,5 +382,33 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  vm.runInContext('pendingViewport={width:740,height:700}',orderContext);
  await vm.runInContext('queueLayout(undefined,true)',orderContext);
  assert.equal(snapshots.length,1,'Reduce Motion uses ordinary layout without a transition snapshot');
+ orderContext.window.matchMedia=()=>({matches:false});
+ let finishSnapshot;
+ orderContext.document.startViewTransition=callback=>{
+   const updateCallbackDone=Promise.resolve().then(callback);
+   return {updateCallbackDone,finished:new Promise(resolve=>finishSnapshot=resolve),skipTransition(){}};
+ };
+ vm.runInContext('pendingViewport={width:760,height:700}',orderContext);
+ await vm.runInContext('queueLayout(undefined,true)',orderContext);
+ vm.runInContext('activeTransition={skipTransition(){}}',orderContext);
+ finishSnapshot(); await tick();
+ assert.equal(orderContext.document.documentElement.dataset.pageReflow,undefined,'Interrupted snapshot cannot disable subsequent page-turn animation');
+
+ // Obsolete counters must finish before a new publication is allocated.
+ let releaseCounter, allocations=0;
+ const counterContext={window:{webkit:{messageHandlers:{reader:{postMessage(){}}}}},
+   document:{documentElement:{dataset:{}}},setTimeout:context.setTimeout,clearTimeout:context.clearTimeout};
+ counterContext.ePub=()=>{allocations++;return {ready:Promise.reject(Error('fixture')),destroy(){}};};
+ counterContext.ePub.Rendition=function(){};
+ counterContext.previousCounter=new Promise(resolve=>releaseCounter=resolve);
+ vm.createContext(counterContext);
+ vm.runInContext(fs.readFileSync('App/Resources/Reader/reader.js','utf8'),counterContext);
+ vm.runInContext('ready=true;publicationURL="fixture";viewportSize={width:1000,height:700};paginationTask=previousCounter;',counterContext);
+ const obsoleteCount=vm.runInContext('requestPagination()',counterContext);
+ const finalCount=vm.runInContext('viewportSize={width:660,height:700};requestPagination()',counterContext);
+ await tick();assert.equal(allocations,0,'Old counter owns resources until cleanup completes');
+ releaseCounter();await Promise.all([obsoleteCount,finalCount]);
+ assert.equal(allocations,1,'Only newest queued page counter allocates a publication');
+
  console.log('Reader bridge: cancellation, ownership, layout, resize, continuous-flow opening and mode restoration checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1});

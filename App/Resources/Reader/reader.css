@@ -29,3 +29,8 @@ html[data-page-style="fade"]::view-transition-new(page){animation:page-fade-in 2
 html[data-page-reflow]::view-transition-group(page),
 html[data-page-reflow]::view-transition-old(page),
 html[data-page-reflow]::view-transition-new(page){animation:none!important}
+
+/* Soften intermediate text while a serialized Mac reflow settles. */
+html[data-layout-busy] #reader{filter:blur(3px)}
+html[data-page-reflow]::view-transition-old(page){filter:blur(3px);object-fit:cover;object-position:left top}
+@media(prefers-reduced-motion:reduce){html[data-layout-busy] #reader{filter:none}}

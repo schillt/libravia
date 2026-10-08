@@ -5,6 +5,7 @@ const chapterSnippetCache = new Map();
 const send = (kind, value = {}) => window.webkit.messageHandlers.reader.postMessage({kind, ...value});
 // A page is one visible reader spread. Count a separate sandboxed rendition;
 // never move the live reader or use character percentages as page indices.
+let paginationTimer;
 let layoutPages = [], paginationGeneration = 0, paginationTask, paginationKey, latestPreferences, publicationURL;
 let navigationTitles = new Map();
 let pageChrome = {enabled:false};
@@ -51,6 +52,7 @@ function paginationSignature(p = latestPreferences) {
   return JSON.stringify([viewportSize?.width, viewportSize?.height, p?.font, p?.fontSize, p?.lineHeight, p?.margin, p?.scrolling]);
 }
 function invalidatePagination() {
+  clearTimeout(paginationTimer); paginationTimer = undefined;
   ++paginationGeneration;
   layoutPages = []; paginationKey = undefined;
   send('pagination', {pages:0, chapters:[]});
@@ -82,6 +84,11 @@ async function waitForAssets(view) {
   })));
   view.expand();
 }
+function schedulePagination() {
+  clearTimeout(paginationTimer);
+  // Live text layout stays responsive; whole-book counting waits for a pause.
+  paginationTimer = setTimeout(() => { paginationTimer = undefined; requestPagination(); }, 350);
+}
 function requestPagination() {
   if (scrolling || !ready || !publicationURL || (typeof ePub === 'undefined' || typeof ePub.Rendition !== 'function')) return;
   const key = paginationSignature();
@@ -90,9 +97,14 @@ function requestPagination() {
   const generation = ++paginationGeneration, p = {...latestPreferences}, size = {...viewportSize};
   layoutPages = [];
   send('pagination', {pages:0, chapters:[]});
+  const precedingPagination = paginationTask;
   const task = (async () => {
     let counterBook, counter, host;
     try {
+      // Never allocate a second offscreen publication while the old counter
+      // is still releasing its frames. Stale queued requests allocate nothing.
+      await precedingPagination?.catch(() => {});
+      if (generation !== paginationGeneration) return;
       counterBook = ePub(publicationURL, {openAs:'opf'});
       await withPaginationTimeout(counterBook.ready);
       if (generation !== paginationGeneration) return;
@@ -237,6 +249,7 @@ function queueLayout(p, resize = false) {
   layoutTask = Promise.resolve().then(async () => {
     await precedingTurn.catch(() => {});
     restoring = true;
+    if (!nativePageTurns) document.documentElement.dataset.layoutBusy = 'true';
     try {
       const applyLayout = async () => {
       if (previewAnchor) {
@@ -269,17 +282,20 @@ function queueLayout(p, resize = false) {
         delete document.documentElement.dataset.pageTurn;
         delete document.documentElement.dataset.pageStyle;
         document.documentElement.dataset.pageReflow = 'true';
-        const transition = document.startViewTransition(async () => { await applyLayout(); await nextPaint(); }); activeTransition = transition;
+        const transition = document.startViewTransition(async () => { await applyLayout(); await nextPaint(); }); activeTransition = transition; activeReflowTransition = transition;
         transition.finished.catch(() => {}).finally(() => {
-          if (activeTransition !== transition) return;
-          activeTransition = null; delete document.documentElement.dataset.pageReflow;
+          if (activeReflowTransition === transition) {
+            activeReflowTransition = null; delete document.documentElement.dataset.pageReflow;
+          }
+          if (activeTransition === transition) activeTransition = null;
         });
         await withPaginationTimeout(transition.updateCallbackDone);
       } else { await applyLayout(); }
     } catch (_) { send('error'); }
     finally {
       restoring = false; layoutTask = undefined;
-      requestPagination();
+      delete document.documentElement.dataset.layoutBusy;
+      schedulePagination();
       if (book?.locations && rendition.location?.start?.cfi) reportPosition(rendition.location);
     }
   });
@@ -417,7 +433,7 @@ async function displayLocation(target) {
   }
   send('navigationError');
 }
-let activeTransition;
+let activeTransition, activeReflowTransition;
 let turnTask = Promise.resolve(), previewAnchor = null, previewing = false;
 function clearChapterSelections() {
   for (const frame of document.querySelectorAll('iframe')) frame.contentWindow?.getSelection()?.removeAllRanges();

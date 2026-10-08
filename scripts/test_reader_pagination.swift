@@ -62,16 +62,16 @@ import WebKit
                     }
                     const before=layoutPages.length;
                     probePreferences.fontSize=30;
-                    await queueLayout(probePreferences);await paginationTask;await pause(250);
+                    await queueLayout(probePreferences);await requestPagination();await pause(250);
                     assert(layoutPages.length>before,'Larger type recounts pages');
                     const oldCount=layoutPages.length;
                     resizeViewport({width:500,height:700});
-                    await layoutTask;await pause(300);await paginationTask;
+                    await layoutTask;await requestPagination();
                     assert(layoutPages.length<oldCount,'Wider viewport recounts pages');
                     const anchor=current;
                     await requestPagination();
                     assert(current===anchor,'Counting cannot move the live reader');
-                    resizeViewport({width:900,height:700});await layoutTask;await pause(300);await paginationTask;
+                    resizeViewport({width:900,height:700});await layoutTask;await requestPagination();
                     await window.readerCommand({name:'layoutPage',value:0});await pause(200);
                     assert(rendition.manager.layout.divisor===2,'Wide reader uses a two-column spread');
                     assert(page()===1,'First wide spread');
@@ -94,6 +94,19 @@ import WebKit
                       await window.readerCommand({name:'previous'});await pause(120);
                       assert(current!==saved,'Page commands remain active after inspector reflow');
                     }
+                    // Sustained slider updates must settle on the newest value
+                    // while sidebar-sized resizes and page commands remain usable.
+                    for(let i=0;i<30;i++) {
+                      await window.readerCommand({name:'preferences',value:{...probePreferences,fontSize:18+i%12}});
+                      await pause(20);
+                      if(i%10===0) resizeViewport({width:i%20===0?660:1000,height:700});
+                    }
+                    await pause(120);await layoutTask;await activeReflowTransition?.finished;await pause(40);await requestPagination();
+                    assert(latestPreferences.fontSize===23,'Live slider settles on its final value');
+                    assert(!document.documentElement.dataset.layoutBusy,'Settled text is sharp again');
+                    assert(!document.documentElement.dataset.pageReflow,'Settled reflow releases the snapshot');
+                    assert(rendition.manager.views.length>0,'Slider stress retains live document views');
+                    await window.readerCommand({name:'next'});await window.readerCommand({name:'previous'});
                     await window.readerCommand({name:'layoutPage',value:0});await pause(120);
                     const original=current;
                     await window.readerCommand({name:'previewTurn',value:'next'});await pause(120);
