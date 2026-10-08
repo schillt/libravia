@@ -388,11 +388,12 @@ struct CatalogView: View {
 }
 
 struct SearchBookRow: View {
+    @ScaledMetric(relativeTo: .body) private var coverWidth = 52.0
     @Environment(AppModel.self) private var model
     var book: Book
     var body: some View {
         HStack(spacing: 14) {
-            CoverView(book: book).frame(width: 52, height: 78)
+            CoverView(book: book).frame(width: coverWidth, height: coverWidth * 1.5)
             VStack(alignment: .leading, spacing: 5) {
                 Text(book.title).font(.headline).lineLimit(2)
                 if !book.author.isEmpty { Text(book.author).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
@@ -597,13 +598,15 @@ struct BookCard: View {
     var coverWidth: CGFloat? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            CoverView(book: book).frame(maxWidth: coverWidth)
+            CoverView(book: book).frame(width: coverWidth).frame(maxWidth: .infinity)
                 .overlay(alignment: .bottomTrailing) {
                     if !book.isFolder { DeviceBookIndicator(book: book).labelStyle(.iconOnly).padding(5).background(.regularMaterial, in: Circle()).padding(5) }
                 }
-            Text(book.title).font(.headline).lineLimit(2)
-            Text(book.isFolder ? "Collection" : book.author.isEmpty ? book.format.rawValue.uppercased() : book.author).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        }.accessibilityElement(children: .combine)
+            Text(book.title).font(.headline).lineLimit(2, reservesSpace: true).truncationMode(.tail).accessibilityLabel(book.title)
+            Text(book.isFolder ? "Collection" : book.author.isEmpty ? book.format.rawValue.uppercased() : book.author).font(.caption).foregroundStyle(.secondary).lineLimit(1, reservesSpace: true)
+        }.frame(width: coverWidth, alignment: .leading)
+            .frame(maxWidth: coverWidth ?? .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
     }
 }
 struct BookDetailView: View {
