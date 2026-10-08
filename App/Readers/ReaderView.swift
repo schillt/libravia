@@ -895,10 +895,12 @@ struct ReaderView: View {
     }
     private func openSearch() {
         searchRevealTask?.cancel(); searchRevealTask = nil
-        if !isDesktop { controller.command?("searchPresentation", true) }
-        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) {
-            if isDesktop { panel = .search; adjustment = nil }
-            searchVisible = true
+        if isDesktop {
+            var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
+            withTransaction(transaction) { panel = .search; adjustment = nil; searchVisible = true }
+        } else {
+            controller.command?("searchPresentation", true)
+            withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = true }
         }
     }
     private func closeSearch() {
