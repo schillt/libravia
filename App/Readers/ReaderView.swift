@@ -122,6 +122,7 @@ struct ReaderView: View {
     @State private var wideContents = false
     @State private var requestedChapterSnippets: Set<Int> = []
     @State private var lastScrubChapter: Int?
+    @State private var scrubChapterHaptic = 0
     init(prepared: PreparedBook, onContentReady: @escaping (Bool) -> Void = { _ in }) { self.prepared = prepared; self.onContentReady = onContentReady; _controller = State(initialValue: ReaderController(position: prepared.position)) }
     var body: some View {
         @Bindable var model = model
@@ -307,8 +308,9 @@ struct ReaderView: View {
         .onChange(of: controller.bookPage) { _, _ in if !scrubbing { scrubFraction = progressFraction } }
         .onChange(of: controller.bookPageCount) { _, _ in if !scrubbing { scrubFraction = progressFraction } }
         .onChange(of: controller.position) { _, _ in controlsActivity = UUID(); if !scrubbing { scrubFraction = progressFraction } }
-        .onChange(of: scrubFraction) { _, _ in if scrubbing { updateScrubChapter() } }
-        .onChange(of: scrubbing) { _, editing in if editing { lastScrubChapter = chapter(at: scrubFraction)?.number; requestChapterSnippet() } else { lastScrubChapter = nil } }
+        #if os(iOS)
+        .sensoryFeedback(.selection, trigger: scrubChapterHaptic)
+        #endif
         .onChange(of: voiceOver) { _, _ in controlsActivity = UUID() }
         .onChange(of: searchVisible) { _, visible in controlsActivity = UUID(); searchFocused = visible }
         .task(id: controlsActivity) {
@@ -374,10 +376,14 @@ struct ReaderView: View {
                             Text(bookPageLabel)
                                 .font(.caption2).monospacedDigit().foregroundStyle(readerSecondaryForeground)
                                 .lineLimit(1)
-                            Slider(value: $scrubFraction, in: 0...1) { editing in
+                            Slider(value: Binding(get: { scrubFraction }, set: { value in
+                                scrubFraction = value
+                                if scrubbing { updateScrubChapter() }
+                            }), in: 0...1) { editing in
+                                if editing { lastScrubChapter = chapter(at: scrubFraction)?.number; requestChapterSnippet() }
                                 withAnimation(.easeInOut(duration: 0.18)) { scrubbing = editing }
                                 controlsActivity = UUID()
-                                if !editing { scrubToProgress() }
+                                if !editing { scrubToProgress(); lastScrubChapter = nil }
                             }
                             .disabled(prepared.book.format == .epub && !model.preferences.scrolling && controller.bookPageCount == 0)
                             .accessibilityLabel("Book position")
@@ -479,7 +485,7 @@ struct ReaderView: View {
         let number = chapter(at: scrubFraction)?.number
         #if os(iOS)
         if let previous = lastScrubChapter, let number, number != previous {
-            UISelectionFeedbackGenerator().selectionChanged()
+            scrubChapterHaptic &+= 1
         }
         #endif
         lastScrubChapter = number
