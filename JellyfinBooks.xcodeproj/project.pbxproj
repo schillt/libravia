@@ -30,6 +30,7 @@
 		E206A4FB7D7D64540512558E /* Fixtures in Resources */ = {isa = PBXBuildFile; fileRef = 6FC1F09BE441258BA67129D1 /* Fixtures */; };
 		F0C110FC1DB32D92F6D3BE1B /* App/Readers/EPUBSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFDAA76E0216C29CB9D3E983 /* App/Readers/EPUBSurface.swift */; };
 		F155899EC4584C83B076A4EE /* App/UI/DiscoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 683B0E9FEB1FB9AEF4BD6BD2 /* App/UI/DiscoveryViews.swift */; };
+		FABC33000000000000000001 /* App/Readers/MacReaderWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC33000000000000000002 /* App/Readers/MacReaderWindow.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -57,6 +58,7 @@
 		EBBAC092C3D1F6040A34023D /* App/Core/BookStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Core/BookStorage.swift; sourceTree = SOURCE_ROOT; };
 		F6DAA3A9ABD78EE0B1B39BC8 /* LibraVia.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = LibraVia.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC0AA3555FA4ECDF2B262A2F /* App/UI/ProgressRematchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/UI/ProgressRematchView.swift; sourceTree = SOURCE_ROOT; };
+		FABC33000000000000000002 /* App/Readers/MacReaderWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Readers/MacReaderWindow.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -95,6 +97,7 @@
 				BFDAA76E0216C29CB9D3E983 /* App/Readers/EPUBSurface.swift */,
 				AC282755A8F0DC9AFA59462A /* App/Readers/PDFSurface.swift */,
 				321B0F81135602C89D91532D /* App/Readers/ReaderView.swift */,
+				FABC33000000000000000002 /* App/Readers/MacReaderWindow.swift */,
 				683B0E9FEB1FB9AEF4BD6BD2 /* App/UI/DiscoveryViews.swift */,
 				62F94D280C21E01531003A66 /* App/UI/LibraryViews.swift */,
 				FC0AA3555FA4ECDF2B262A2F /* App/UI/ProgressRematchView.swift */,
@@ -196,6 +199,7 @@
 				F0C110FC1DB32D92F6D3BE1B /* App/Readers/EPUBSurface.swift in Sources */,
 				502CDA56E4394CACD49A394B /* App/Readers/PDFSurface.swift in Sources */,
 				D8E3FA356C606C0988A8B4F1 /* App/Readers/ReaderView.swift in Sources */,
+				FABC33000000000000000001 /* App/Readers/MacReaderWindow.swift in Sources */,
 				F155899EC4584C83B076A4EE /* App/UI/DiscoveryViews.swift in Sources */,
 				95870BE3105FD7093593E1E0 /* App/UI/LibraryViews.swift in Sources */,
 				CCDB78E76FD20D9296A34234 /* App/UI/ProgressRematchView.swift in Sources */,

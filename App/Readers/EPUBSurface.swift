@@ -10,10 +10,20 @@ typealias PlatformViewRepresentable = UIViewRepresentable
 typealias EPUBViewRepresentable = UIViewControllerRepresentable
 #endif
 
+struct ReaderPageChrome: Codable, Equatable {
+    var enabled = false
+    var showChapter = true
+    var showProgress = true
+    var top: Double = 0
+    var bottom: Double = 0
+    var textSize: Double = 12
+}
+
 struct EPUBSurface: EPUBViewRepresentable {
     let prepared: PreparedBook
     let controller: ReaderController
     let preferences: ReaderPreferences
+    var chrome = ReaderPageChrome()
     func makeCoordinator() -> Coordinator { Coordinator(prepared: prepared, controller: controller) }
     private func makeWebView(_ coordinator: Coordinator) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -35,10 +45,6 @@ struct EPUBSurface: EPUBViewRepresentable {
         web.scrollView.panGestureRecognizer.require(toFail: pan)
         web.scrollView.isScrollEnabled = false
         coordinator.pagePan = pan
-        #else
-        let tap = NSClickGestureRecognizer(target: coordinator, action: #selector(Coordinator.readerClick(_:)))
-        tap.delaysPrimaryMouseButtonEvents = false
-        web.addGestureRecognizer(tap)
         #endif
         web.load(URLRequest(url: URL(string: "appbook://local/reader/index.html")!))
         controller.command = { [weak coordinator] name, value in coordinator?.send(name, value) }
@@ -46,7 +52,7 @@ struct EPUBSurface: EPUBViewRepresentable {
     }
     #if os(macOS)
     func makeNSView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
-    func updateNSView(_ web: WKWebView, context: Context) { context.coordinator.preferences(preferences) }
+    func updateNSView(_ web: WKWebView, context: Context) { context.coordinator.pageChrome(chrome); context.coordinator.preferences(preferences) }
     static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) { web.configuration.userContentController.removeScriptMessageHandler(forName: "reader"); coordinator.controller.command = nil }
     #else
     func makeUIViewController(context: Context) -> ReaderHostController {
@@ -56,7 +62,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         context.coordinator.host = host.view; context.coordinator.hostController = host
         return host
     }
-    func updateUIViewController(_ view: ReaderHostController, context: Context) { context.coordinator.preferences(preferences) }
+    func updateUIViewController(_ view: ReaderHostController, context: Context) { context.coordinator.pageChrome(chrome); context.coordinator.preferences(preferences) }
     static func dismantleUIViewController(_ view: ReaderHostController, coordinator: Coordinator) {
         coordinator.web?.configuration.userContentController.removeScriptMessageHandler(forName: "reader")
         coordinator.controller.command = nil; coordinator.stopSnapshots()
@@ -67,6 +73,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         let controller: ReaderController
         weak var web: WKWebView?
         var latestPreferences = ReaderPreferences()
+        var latestChrome = ReaderPageChrome()
         var loaded = false
         #if os(iOS)
         weak var host: UIView?
@@ -84,13 +91,18 @@ struct EPUBSurface: EPUBViewRepresentable {
         }
         func cachedAdjacentPage(_ direction: String) -> UIImage? {
             guard cachedPage != nil, cachedPageCFI == controller.position.cfi, cachedPageSize == web?.bounds.size,
-                  cachedPagePreferences == latestPreferences else { return nil }
+                  cachedPagePreferences == latestPreferences, cachedPageChrome == latestChrome else { return nil }
             return adjacentPages[direction]
+        }
+        private var contentBounds: CGRect {
+            guard let web else { return .zero }
+            return latestChrome.enabled ? CGRect(x: 0, y: latestChrome.top, width: web.bounds.width,
+                height: max(0, web.bounds.height - latestChrome.top - latestChrome.bottom)) : web.bounds
         }
         func canCurl(at point: CGPoint) -> Bool {
             guard controller.ready, !curlTurning, turnToken == nil, pendingCard == nil, !textSelectionActive, let web,
                   !curlBlockedRegions.contains(where: { $0.contains(point) }) else { return false }
-            guard web.bounds.contains(point) else { return false }
+            guard contentBounds.contains(point) else { return false }
             return cachedAdjacentPage("previous") != nil || cachedAdjacentPage("next") != nil
         }
         func resumeQueuedTurns() { drainTurns() }
@@ -159,14 +171,14 @@ struct EPUBSurface: EPUBViewRepresentable {
             guard controller.ready, !latestPreferences.scrolling,
                   ["slide", "curl"].contains(latestPreferences.pageTransition), !UIAccessibility.isReduceMotionEnabled,
                   let web, let host, let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
-            let key = cfi + "|" + String(describing: web.bounds.size) + "|" + String(describing: latestPreferences)
+            let key = cfi + "|" + String(describing: web.bounds.size) + "|" + String(describing: latestPreferences) + "|" + String(describing: latestChrome)
             guard key != snapshotKey else { return }
             invalidateSnapshots(); snapshotKey = key
             let request = UUID().uuidString; snapshotRequest = request
             web.evaluateJavaScript("window.readerSnapshotOrigin()") { [weak self] result, _ in
                 guard let self, self.snapshotRequest == request else { return }
                 guard let origin = result as? [String: Any], origin["cfi"] as? String == self.controller.position.cfi,
-                      let size = origin["size"] as? [String:Double],
+                      let size = (origin["hostSize"] ?? origin["size"]) as? [String:Double],
                       abs((size["width"] ?? 0) - web.bounds.width) < 1,
                       abs((size["height"] ?? 0) - web.bounds.height) < 1 else {
                     self.invalidateSnapshots(); return
@@ -252,6 +264,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         private var cachedPageSize: CGSize = .zero
         private var cachedPageCFI: String?
         private var cachedPagePreferences: ReaderPreferences?
+        private var cachedPageChrome: ReaderPageChrome?
         private var cacheRequest = UUID()
         #endif
         init(prepared: PreparedBook, controller: ReaderController) { self.prepared = prepared; self.controller = controller }
@@ -300,7 +313,7 @@ struct EPUBSurface: EPUBViewRepresentable {
                 interactiveSwipe = swipe
                 warmAdjacentPages()
                 if cachedPageSize == web.bounds.size, cachedPageCFI == controller.position.cfi,
-                   cachedPagePreferences == latestPreferences { swipe.image = cachedPage }
+                   cachedPagePreferences == latestPreferences, cachedPageChrome == latestChrome { swipe.image = cachedPage }
                 let point = swipe.start
                 web.evaluateJavaScript("window.readerCanTurn(\(point.x),\(point.y))") { [weak self, weak swipe] result, _ in
                     guard let self, let swipe, self.interactiveSwipe === swipe else { return }
@@ -451,8 +464,8 @@ struct EPUBSurface: EPUBViewRepresentable {
                   ["slide", "curl"].contains(latestPreferences.pageTransition), !UIAccessibility.isReduceMotionEnabled,
                   interactiveSwipe == nil, !interactiveFinishing, !curlTurning, turnToken == nil,
                   let web, let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
-            let size = web.bounds.size, preferences = latestPreferences
-            if cachedPage != nil, cachedPageCFI == cfi, cachedPageSize == size, cachedPagePreferences == preferences {
+            let size = web.bounds.size, preferences = latestPreferences, chrome = latestChrome
+            if cachedPage != nil, cachedPageCFI == cfi, cachedPageSize == size, cachedPagePreferences == preferences, cachedPageChrome == chrome {
                 warmAdjacentPages(); return
             }
             guard currentCaptureInFlight == nil else { currentCapturePending = true; return }
@@ -474,16 +487,25 @@ struct EPUBSurface: EPUBViewRepresentable {
                 }
                 guard self.cacheRequest == request, self.interactiveSwipe == nil,
                       self.turnToken == nil, !self.interactiveFinishing, !self.curlTurning,
-                      self.controller.position.cfi == cfi, self.latestPreferences == preferences,
+                      self.controller.position.cfi == cfi, self.latestPreferences == preferences, self.latestChrome == chrome,
                       self.web?.bounds.size == size else { return }
                 self.cachedPage = image
                 self.cachedPageSize = size
                 self.cachedPageCFI = cfi
-                self.cachedPagePreferences = preferences
+                self.cachedPagePreferences = preferences; self.cachedPageChrome = chrome
                 self.warmAdjacentPages()
             }
         }
         #endif
+        func pageChrome(_ chrome: ReaderPageChrome) {
+            guard chrome != latestChrome else { return }
+            latestChrome = chrome
+            #if os(iOS)
+            abortInteractive(); invalidateSnapshots(); cachedPage = nil; cacheRequest = UUID()
+            #endif
+            if loaded { sendRaw("pageChrome", chromeObject()) }
+        }
+        private func chromeObject() -> Any { (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(latestChrome))) ?? [:] }
         func preferences(_ preferences: ReaderPreferences) {
             guard preferences != latestPreferences else { return }
             latestPreferences = preferences
@@ -502,7 +524,10 @@ struct EPUBSurface: EPUBViewRepresentable {
             false
             #endif
         }
-        func preferencesObject() -> Any { (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(latestPreferences))) ?? [:] }
+        func preferencesObject() -> Any {
+            var value = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(latestPreferences))) as? [String: Any] ?? [:]
+            value["pageChrome"] = chromeObject(); return value
+        }
         func send(_ command: String, _ value: Any?) {
             #if os(iOS)
             if command == "next" || command == "previous" {
@@ -867,6 +892,7 @@ extension EPUBSurface.Coordinator: UIGestureRecognizerDelegate {
         guard gestureRecognizer === pagePan, let pan = gestureRecognizer as? UIPanGestureRecognizer, let web else { return true }
         guard controller.ready, !latestPreferences.scrolling, interactiveSwipe == nil else { return false }
         if latestPreferences.pageTransition == "curl", !UIAccessibility.isReduceMotionEnabled { return false }
+        guard contentBounds.contains(pan.location(in: web)) else { return false }
         let movement = pan.translation(in: web)
         return abs(movement.x) > abs(movement.y) * 1.5
     }

@@ -1,5 +1,10 @@
-html,body,#reader{margin:0;width:100%;height:100%;overflow:hidden}body{background:#fff}*{box-sizing:border-box}
-#reader{view-transition-name:page}
+html,body,#page{margin:0;width:100%;height:100%;overflow:hidden}body{background:#fff}*{box-sizing:border-box}
+#page{position:relative;view-transition-name:page}
+#reader{position:absolute;top:0;bottom:0;left:0;width:100%;height:100%;overflow:hidden}
+#page-chapter,#page-progress{position:absolute;left:24px;right:24px;text-align:center;font:500 12px -apple-system,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.75}
+#page-chapter{top:0;display:flex;align-items:center;justify-content:center}
+#page-progress{bottom:0;display:flex;align-items:center;justify-content:center}
+#page-chapter[hidden],#page-progress[hidden]{display:none}
 ::view-transition-old(root),::view-transition-new(root){animation:none}
 ::view-transition-group(page){overflow:hidden}
 html[data-page-style="slide"][data-page-turn="next"]::view-transition-old(page){animation:page-out-left 290ms cubic-bezier(.24,.7,.22,1) both}

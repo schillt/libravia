@@ -54,7 +54,8 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  const transitions=[];
  context.document.startViewTransition=update=>{
    transitions.push({direction:context.document.documentElement.dataset.pageTurn,style:context.document.documentElement.dataset.pageStyle});
-   return {finished:Promise.resolve().then(update)};
+   const updateCallbackDone=Promise.resolve().then(update);
+   return {updateCallbackDone,finished:updateCallbackDone,skipTransition(){}};
  };
  context.window.matchMedia=()=>({matches:false});
  vm.runInContext("pageTransition='slide'",context);
@@ -62,6 +63,7 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.equal(turns,1);
  assert.equal(transitions.length,1,'One transition snapshots outgoing and incoming pages');
  assert.equal(transitions[0].direction,'next');
+ await tick();
  assert.equal(context.document.documentElement.dataset.pageTurn,undefined,'Transition state is removed after animation');
  vm.runInContext('nativePageTurns=true',context);
  vm.runInContext('ready=true',context);
@@ -113,7 +115,7 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  context.document.querySelectorAll=()=>[];
  context.window.matchMedia=()=>({matches:true});
  // Tap zones use the whole reader viewport and the native animation route.
- context.document.getElementById=()=>({getBoundingClientRect:()=>({left:20,width:1000})});
+ context.document.getElementById=()=>({getBoundingClientRect:()=>({left:20,top:0,width:1000,height:700})});
  await context.window.readerCommand({name:'gesture',value:{action:'tap',x:50,y:40}});
  assert.equal(messages.at(-1).direction,'previous');
  await context.window.readerCommand({name:'gesture',value:{action:'tap',x:1000,y:40}});
@@ -205,22 +207,22 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.equal([...timers.keys()][0],firstPreviewTimer,'Sustained slider edits must not postpone live preview');
  assert.equal(timers.size,1,'Rapid appearance edits must coalesce');
  vm.runInContext('current="navigated"',context);
- await fireTimer();
+ await fireTimer(); await vm.runInContext('layoutTask',context);
  assert.deepEqual(displays,['navigated'],'Capture exact CFI when layout applies, after pending navigation');
  let finishDisplay;
  context.mockRendition.display=cfi=>{displays.push(cfi);return new Promise(r=>finishDisplay=r);};
- const first=vm.runInContext('queueLayout({theme:"light"})',context);
+ const first=vm.runInContext('queueLayout({theme:"light",fontSize:24})',context);
  await tick();
- const second=vm.runInContext('queueLayout({theme:"dark"}); queueLayout(undefined,true)',context);
+ const second=vm.runInContext('queueLayout({theme:"dark",fontSize:26}); queueLayout(undefined,true)',context);
  assert.equal(displays.length,2,'Overlapping layout must wait');
  assert.equal(vm.runInContext('restoring',context),true);
- finishDisplay(); await tick();
+ finishDisplay(); await tick(); await tick(); await tick();
  assert.equal(displays.length,3,'Latest preference and resize applied after first restoration');
  assert.equal(vm.runInContext('restoring',context),true,'Suppression spans queued restoration');
  finishDisplay(); await first; await second;
  assert.equal(vm.runInContext('restoring',context),false);
  context.mockRendition.display=async()=>{throw new Error('fixture');};
- await vm.runInContext('queueLayout({theme:"light"})',context);
+ await vm.runInContext('queueLayout({theme:"light",fontSize:28})',context);
  assert.equal(messages.filter(m=>m.kind==='error').length,1,'Asynchronous layout error handled');
  assert.equal(vm.runInContext('restoring',context),false,'Failed layout releases suppression');
  context.mockRendition.location={start:{cfi:'anchor',href:'chapter.xhtml',displayed:{page:2,total:10}}};
@@ -264,7 +266,9 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  // Unlike mouse input, the software keyboard really changes the viewport.
  // Search freezes the hidden EPUB box through all intermediate sizes.
  const readerElement={style:{}};
- context.document.getElementById=()=>readerElement;
+ const chromeHeader={style:{}}, chromeFooter={style:{}};
+ context.document.getElementById=id=>id==='reader'?readerElement:id==='page-chapter'?chromeHeader:chromeFooter;
+ vm.runInContext('setPageChrome({enabled:true,top:52,bottom:60,showChapter:true,showProgress:true})', context);
  for (let cycle=0;cycle<3;cycle++) {
    await context.window.readerCommand({name:'searchPresentation',value:true});
    assert.equal(readerElement.style.width,'375px');
@@ -274,13 +278,14 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
    await context.window.readerCommand({name:'cancelSearch'});
    assert.equal(readerElement.style.height,'700px','Cancelling text search does not release the layout before keyboard dismissal');
    await context.window.readerCommand({name:'searchPresentation',value:false});
-   assert.equal(readerElement.style.height,'','Keyboard did-hide releases the fixed box');
+   assert.equal(readerElement.style.height,'calc(100% - 112px)','Closing search restores chapter and progress insets');
    vm.runInContext('resizeViewport({width:375,height:700})',context);
  }
  assert.equal(resized.length,0,'Repeated physical-keyboard cycles do not resize');
  assert.equal(displays.length,displaysBeforeKeyboard,'Keyboard cycles do not redisplay');
  assert.equal(vm.runInContext('current',context),positionBeforeKeyboard,'Keyboard cycles preserve exact location');
- vm.runInContext('resizeViewport({width:700,height:375}); resizeViewport({width:700,height:375})',context);
+ vm.runInContext('resizeViewport({width:680,height:390}); resizeViewport({width:700,height:375}); resizeViewport({width:700,height:375})',context);
+ await vm.runInContext('layoutTask',context);
  assert.deepEqual(resized,[{width:700,height:375}],'A real rotation resizes the rendition exactly once');
  assert.equal(displays.length,displaysBeforeKeyboard,'Leave resize location restoration to EPUB.js instead of displaying twice');
  vm.runInContext('resizeViewport({width:0,height:0})',context);
@@ -305,7 +310,7 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
    };
    const flowContext = {
      window:{webkit:{messageHandlers:{reader:{postMessage:m=>flowMessages.push(m)}}}},
-     document:{body:{style:{}},getElementById:()=>({getBoundingClientRect:()=>({width:375,height:700})})},
+     document:{body:{style:{}},getElementById:()=>({style:{},getBoundingClientRect:()=>({left:0,top:0,width:375,height:700})})},
      ePub:()=>publication,
      ResizeObserver:class {observe(){} disconnect(){}},
      setTimeout:callback=>{flowTimers.set(1,callback);return 1;},clearTimeout:id=>flowTimers.delete(id),
@@ -315,7 +320,7 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
    await flowContext.window.readerCommand({name:'open',value:{url:'fixture.opf',cfi:'saved-anchor',preferences:{scrolling:initiallyScrolling}}});
    assert.equal(options.manager,'continuous','Opening uses adjacent-chapter rendering in either mode');
    assert.equal(options.flow,initiallyScrolling?'scrolled-continuous':'paginated');
-   assert.equal(flows.at(-1),options.flow,'Initial preferences agree with renderer setup');
+   assert.equal(flows.length,0,'Initial setup does not clear the already configured rendition');
    assert.equal(flowMessages.at(-1).kind,'ready');
    assert.equal(anchors.at(-1),'saved-anchor','Opening restores the saved exact location');
    for (const scrolling of [!initiallyScrolling, initiallyScrolling]) {

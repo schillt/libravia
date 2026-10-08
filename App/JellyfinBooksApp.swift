@@ -3,19 +3,36 @@ import SwiftUI
 @main struct JellyfinBooksApp: App {
     @State private var model = AppModel()
     var body: some Scene {
+        #if os(macOS)
+        WindowGroup {
+            RootView().environment(model)
+                .frame(minWidth: 320, minHeight: 480)
+        }
+        .defaultSize(width: 1100, height: 780)
+
+        Window("Reader", id: MacReaderWindow.sceneID) {
+            MacReaderWindow().environment(model)
+        }
+        .defaultSize(width: 1000, height: 800)
+        .windowResizability(.automatic)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+        .commands { ReaderCommands() }
+        #else
         WindowGroup {
             RootView().environment(model)
                 .frame(minWidth: 320, minHeight: 480)
         }
         .commands { ReaderCommands() }
-        #if os(macOS)
-        .defaultSize(width: 1100, height: 780)
         #endif
     }
 }
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
     @Namespace private var readerNamespace
     @State private var showingSyncReview = false
     @State private var checkedUnavailableID: String?
@@ -110,7 +127,9 @@ struct RootView: View {
             ReadingConflictChoice(conflict: conflict) { model.conflict = nil }
         }
         #if os(macOS)
-        .sheet(item: $model.readerLaunchBook, onDismiss: { model.closeReader() }) { book in BookOpeningView(book: book).environment(model).frame(minWidth: 650, idealWidth: 1000, maxWidth: .infinity, minHeight: 550, idealHeight: 800, maxHeight: .infinity) }
+        .onChange(of: model.readerLaunchBook?.id, initial: true) { _, bookID in
+            if bookID != nil { openWindow(id: MacReaderWindow.sceneID) }
+        }
         #else
         .fullScreenCover(item: $model.readerLaunchBook, onDismiss: { model.closeReader() }) { book in
             BookOpeningView(book: book).environment(model)

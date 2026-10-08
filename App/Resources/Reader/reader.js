@@ -7,6 +7,41 @@ const send = (kind, value = {}) => window.webkit.messageHandlers.reader.postMess
 // never move the live reader or use character percentages as page indices.
 let layoutPages = [], paginationGeneration = 0, paginationTask, paginationKey, latestPreferences, publicationURL;
 let navigationTitles = new Map();
+let pageChrome = {enabled:false};
+function setPageChrome(value = {}) {
+  pageChrome = {...value};
+  const reader = document.getElementById?.('reader');
+  const header = document.getElementById?.('page-chapter');
+  const footer = document.getElementById?.('page-progress');
+  if (!reader || !header || !footer) return;
+  const top = value.enabled ? Math.max(0, value.top || 0) : 0;
+  const bottom = value.enabled ? Math.max(0, value.bottom || 0) : 0;
+  reader.style.top = top + 'px'; reader.style.bottom = bottom + 'px';
+  reader.style.height = `calc(100% - ${top + bottom}px)`;
+  header.style.height = top + 'px'; footer.style.height = bottom + 'px';
+  header.style.fontSize = footer.style.fontSize = Math.max(12, value.textSize || 12) + 'px';
+  header.hidden = !value.enabled || !value.showChapter;
+  footer.hidden = !value.enabled || !value.showProgress;
+}
+function pageInformation(location) {
+  const start = location?.start;
+  if (!start) return {chapter:'',progress:''};
+  const divisor = rendition.manager?.layout?.divisor || 1;
+  const page = Math.ceil((start.displayed?.page || 0) / divisor);
+  const total = Math.ceil((start.displayed?.total || 0) / divisor);
+  return {chapter:navigationTitles.get(start.index) || 'Reading',
+          progress:total > 0 && page > 0 ? `${Math.max(0,total-page)} ${total-page===1?'page':'pages'} left in chapter` : 'Chapter pages unavailable'};
+}
+function updatePageInformation(location) {
+  const info = pageInformation(location);
+  const header = document.getElementById?.('page-chapter'), footer = document.getElementById?.('page-progress');
+  if (header) header.textContent = info.chapter;
+  if (footer) footer.textContent = info.progress;
+}
+function insideContent(x,y) {
+  const rect = document.getElementById?.('reader')?.getBoundingClientRect();
+  return !rect || (x >= rect.left && x < rect.left+rect.width && y >= rect.top && y < rect.top+rect.height);
+}
 function paginationSignature(p = latestPreferences) {
   return JSON.stringify([viewportSize?.width, viewportSize?.height, p?.font, p?.fontSize, p?.lineHeight, p?.margin, p?.scrolling]);
 }
@@ -127,15 +162,19 @@ async function seekLayoutPage(page) {
 
 function preferences(p) {
   if (!rendition) return;
+  const requestedScrolling = p.scrolling ?? scrolling;
+  const changedFlow = scrolling !== requestedScrolling;
   latestPreferences = {...p};
-  scrolling = p.scrolling;
+  scrolling = requestedScrolling;
+  if (p.pageChrome) setPageChrome(p.pageChrome);
   pageTapZoneFraction = Number.isFinite(p.pageTapZoneFraction) ? Math.min(0.3, Math.max(0.1, p.pageTapZoneFraction)) : 0.2;
   pageTransition = p.pageTransition === 'curl' ? 'fade' : ['instant','fade','slide'].includes(p.pageTransition) ? p.pageTransition : 'slide';
   const colors = setReaderTheme(rendition, p);
   document.body.style.background = colors[0];
   document.body.style.color = colors[1];
-  rendition.flow(p.scrolling ? 'scrolled-continuous' : 'paginated');
+  if (changedFlow) rendition.flow(scrolling ? 'scrolled-continuous' : 'paginated');
   refreshChapterBreaks();
+  return changedFlow;
 }
 function pageTapAction(x) {
   const rect = document.getElementById?.('reader')?.getBoundingClientRect();
@@ -154,7 +193,7 @@ async function pageTap(x) {
 // One layout operation owns relocation suppression at a time. Requests arriving
 // during display are coalesced and applied before reporting positions resumes.
 let layoutTask, pendingPreferences, pendingResize = false;
-let viewportSize, viewportObserver, searchPresentation = false;
+let viewportSize, viewportObserver, pendingViewport, searchPresentation = false;
 function setSearchPresentation(active) {
   searchPresentation = !!active;
   const element = document.getElementById('reader');
@@ -163,21 +202,18 @@ function setSearchPresentation(active) {
   // even when SwiftUI ignores its safe area. Keep the hidden document's box
   // fixed until UIKit reports that the keyboard finished hiding.
   element.style.width = active ? viewportSize.width + 'px' : '';
-  element.style.height = active ? viewportSize.height + 'px' : '';
+  if (active) element.style.height = viewportSize.height + 'px';
+  else setPageChrome(pageChrome);
 }
 function resizeViewport(size) {
   const next = {width:Math.floor(size.width), height:Math.floor(size.height)};
   if (searchPresentation || next.width <= 0 || next.height <= 0 || !rendition) return;
   if (viewportSize?.width === next.width && viewportSize?.height === next.height) return;
-  invalidatePagination();
-  viewportSize = next;
-  observedSectionPages.clear();
-  // EPUB.js already restores the CFI when resize changes the stage. Do not
-  // redisplay that boundary CFI a second time; it can map to the preceding page.
-  rendition.resize(next.width, next.height);
-  requestPagination();
+  pendingViewport = next;
+  queueLayout(undefined, true);
 }
 function queueLayout(p, resize = false) {
+  if (p) p = {...latestPreferences,...p};
   if (p || resize) observedSectionPages.clear();
   if (p && paginationSignature(p) !== paginationSignature()) invalidatePagination();
   if (p) pendingPreferences = p;
@@ -187,11 +223,17 @@ function queueLayout(p, resize = false) {
     restoring = true;
     try {
       while (pendingPreferences || pendingResize) {
-        const p = pendingPreferences;
-        pendingPreferences = undefined; pendingResize = false;
+        const p = pendingPreferences, size = pendingViewport;
+        pendingPreferences = undefined; pendingResize = false; pendingViewport = undefined;
+        if (size && (size.width !== viewportSize?.width || size.height !== viewportSize?.height)) {
+          invalidatePagination(); viewportSize = size;
+          // EPUB.js restores its own CFI once. Do not redisplay a boundary CFI.
+          rendition.resize(size.width,size.height);
+        }
         const anchor = current || rendition.location?.start?.cfi;
-        if (p) preferences(p);
-        if (anchor) { await rendition.display(anchor); }
+        const relayout = p && paginationSignature(p) !== paginationSignature();
+        const flowChanged = p ? preferences(p) : false;
+        if (anchor && relayout && !flowChanged) { await withPaginationTimeout(rendition.display(anchor)); }
       }
     } catch (_) { send('error'); }
     finally {
@@ -334,12 +376,13 @@ async function displayLocation(target) {
   }
   send('navigationError');
 }
+let activeTransition;
 let turnTask = Promise.resolve(), previewAnchor = null, previewing = false;
 function clearChapterSelections() {
   for (const frame of document.querySelectorAll('iframe')) frame.contentWindow?.getSelection()?.removeAllRanges();
 }
 window.readerCanTurn = (x, y) => {
-  if (!ready || scrolling || previewing) return false;
+  if (!ready || scrolling || previewing || !insideContent(x,y)) return false;
   for (const frame of document.querySelectorAll('iframe')) {
     const rect = frame.getBoundingClientRect();
     if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) continue;
@@ -360,10 +403,12 @@ const nextPaint = () => new Promise(resolve => {
 function turn(direction, preview = false, request = null) {
   // WebKit captures both rendered pages; EPUB.js only advances once between snapshots.
   // Serialize rendering only. Native decoration never blocks the next input.
+  activeTransition?.skipTransition();
   turnTask = turnTask.catch(() => {}).then(async () => {
+    activeTransition?.skipTransition();
     await layoutTask;
     if (scrolling) return;
-    const advance = () => direction === 'next' ? rendition.next() : rendition.prev();
+    const advance = async () => { await withPaginationTimeout(direction === 'next' ? rendition.next() : rendition.prev()); updatePageInformation(rendition.location); };
     if (nativePageTurns || pageTransition === 'instant' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || typeof document.startViewTransition !== 'function') {
       await advance();
       clearChapterSelections();
@@ -377,8 +422,14 @@ function turn(direction, preview = false, request = null) {
     }
     document.documentElement.dataset.pageTurn = direction;
     document.documentElement.dataset.pageStyle = pageTransition;
-    try { await document.startViewTransition(advance).finished; }
-    finally { delete document.documentElement.dataset.pageTurn; delete document.documentElement.dataset.pageStyle; }
+    const transition = document.startViewTransition(advance); activeTransition = transition;
+    // Serialize layout only; a new input can interrupt decorative settling.
+    transition.finished.catch(() => {}).finally(() => {
+      if (activeTransition !== transition) return;
+      activeTransition = null;
+      delete document.documentElement.dataset.pageTurn; delete document.documentElement.dataset.pageStyle;
+    });
+    await withPaginationTimeout(transition.updateCallbackDone);
   });
   return turnTask;
 }
@@ -399,6 +450,7 @@ function refreshChapterBreaks() {
 function reportPosition(location) {
   if (restoring || previewing || !location?.start?.cfi) return;
   current = location.start.cfi;
+  updatePageInformation(location);
   const displayed = location.start.displayed || {};
   send('position',{cfi:current,href:location.start.href,fraction:book.locations.percentageFromCfi(current),chapterTitle:navigationTitles.get(location.start.index) || 'Reading',chapterPage:Math.ceil((displayed.page || 0)/(rendition.manager?.layout?.divisor || 1)),chapterPageCount:Math.ceil((displayed.total || 0)/(rendition.manager?.layout?.divisor || 1)),...paginationPosition(location)});
 }
@@ -434,9 +486,10 @@ window.readerSnapshotOrigin = () => {
       for (const box of link.getClientRects()) regions.push({x:rect.left+box.left,y:rect.top+box.top,width:box.width,height:box.height});
     }
   }
-  return {regions,cfi:start.cfi,href:start.href,page:Math.floor(((start.displayed?.page || 1)-1)/divisor),size:{...viewportSize}};
+  return {regions,cfi:start.cfi,href:start.href,page:Math.floor(((start.displayed?.page || 1)-1)/divisor),size:{...viewportSize},hostSize:{width:window.innerWidth,height:window.innerHeight},chrome:{...pageChrome}};
 };
 async function renderSnapshot(value) {
+  setPageChrome(value.origin.chrome || value.preferences.pageChrome || {});
   if (!book) {
     book = ePub(value.url, {openAs:'opf'});
     await withPaginationTimeout(book.ready);
@@ -446,11 +499,16 @@ async function renderSnapshot(value) {
     // display is queued behind stage attachment; started alone is earlier.
     await withPaginationTimeout(rendition.display(value.origin.href));
     rendition.manager.viewSettings.forceEvenPages = true;
+    navigationTitles = new Map();
+    for (const item of flatten((await book.loaded.navigation).toc)) {
+      const section = book.spine.get(item.id);
+      if (section && !navigationTitles.has(section.index)) navigationTitles.set(section.index,item.title);
+    }
   }
   viewportSize = {...value.origin.size};
   rendition.resize(viewportSize.width, viewportSize.height);
   const colors = setReaderTheme(rendition, {...value.preferences,scrolling:false});
-  document.body.style.background = colors[0];
+  document.body.style.background = colors[0]; document.body.style.color = colors[1];
   await withPaginationTimeout(rendition.display(value.origin.href));
   let view = rendition.manager.views.find(book.spine.get(value.origin.href));
   await withPaginationTimeout(waitForAssets(view));
@@ -463,9 +521,10 @@ async function renderSnapshot(value) {
   for (const view of rendition.manager.views.displayed()) await withPaginationTimeout(waitForAssets(view));
   await rendition.reportLocation();await nextPaint();
   const destination = await rendition.currentLocation();
+  updatePageInformation(destination); await nextPaint();
   const exists = destination.start.index !== source.start.index || destination.start.displayed.page !== source.start.displayed.page;
   for (const section of book.spine.spineItems) if (section.document && !sectionIsDisplayed(section)) section.unload();
-  send('snapshotReady',{request:value.request,direction:value.direction,exists,cfi:destination.start.cfi});
+  send('snapshotReady',{request:value.request,direction:value.direction,exists,cfi:destination.start.cfi,href:destination.start.href,section:destination.start.index,displayed:destination.start.displayed});
 }
 
 window.readerCommand = async ({name,value}) => {
@@ -481,6 +540,7 @@ window.readerCommand = async ({name,value}) => {
         book.on('openFailed', () => send('error'));
         await book.ready;
         viewportObserver?.disconnect();
+        setPageChrome(value.preferences.pageChrome || {});
         const readerElement = document.getElementById('reader');
         const bounds = readerElement.getBoundingClientRect();
         viewportSize = {width:Math.max(1, Math.floor(bounds.width)), height:Math.max(1, Math.floor(bounds.height))};
@@ -520,6 +580,7 @@ window.readerCommand = async ({name,value}) => {
           // Taps use native recognizers on both platforms. Sandboxed publication
           // frames must never require scripts enabled to navigate or show controls.
         });
+        scrolling = !!value.preferences.scrolling;
         preferences(value.preferences);
         send('stage',{label:'Preparing reading positions…'});
         book.locations.pause = 1;
@@ -546,6 +607,7 @@ window.readerCommand = async ({name,value}) => {
         requestPagination();
         break;
       case 'gesture': {
+        if (!insideContent(value.x,value.y)) { if (value.action === 'tap') send('toggleControls'); return; }
         const frames = Array.from(document.querySelectorAll('iframe'));
         for (const frame of frames) {
           const rect = frame.getBoundingClientRect();
@@ -565,6 +627,7 @@ window.readerCommand = async ({name,value}) => {
         }
         break;
       }
+      case 'pageChrome': setPageChrome(value); updatePageInformation(rendition?.location); break;
       case 'snapshot':
         await queueSnapshot(value);
         break;

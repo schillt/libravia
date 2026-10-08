@@ -54,9 +54,15 @@ Accept rapid input while decoration settles. Interrupt card settling on new inpu
 
 Page curl is a separate iPhone/iPad option using UIKit's native page-curl controller. Its current page contains live WebKit content; adjacent pages use the same disposable preview cache. Native completion commits the live turn, cancellation preserves position, and central interaction/selection/link regions remain available. UIKit owns its gesture delegates. Mac exposes Fade as the fallback for a stored curl preference; Reduce Motion skips decoration. Physical edge/corner feel, rapid interaction, themes and accessibility require acceptance independently of builds and bridge tests.
 
+Horizontal EPUB pages own their quiet chapter and progress labels inside the trusted page shell. Full-window preview images include those labels; the inset publication viewport remains the pagination/selection coordinate space. Book titles appear when controls are revealed. Chrome visibility is separate from typography preferences and does not itself redisplay a CFI. Search dismissal restores the publication insets.
+
+Install the bounded animation-frame scheduler before EPUB.js captures its frame callbacks: native delivery and a timeout race with single completion and cancellation. This allows layout queues to progress when WebKit is occluded. On Mac, serialize rendering updates rather than decorative transition completion, and coalesce resize bursts before recounting. Verify these contracts with `test_reader.js`, `test_reader_frame.js`, and the native pagination probe.
+
 ## Native UI and concurrency
 
 Share models and reader commands while tailoring presentation to touch, keyboard, pointer, available space, and accessibility settings. Use compact sheets and sufficiently wide side panels. Keep controls outside reading content and avoid viewport changes merely to hide chrome. Respect VoiceOver, larger interface text, contrast, and Reduce Motion.
+
+On Mac, the active book opens in one separate resizable reader window sharing the app-owned account and reading model. The library remains interactive; opening another book replaces the single active reader rather than creating competing position writers. Native window close, Command-W, cancellation, and reader exit converge on `AppModel.closeReader()` so local progress is flushed and cache protection is released. The reader window is not automatically restored without an active book. Search, contents/bookmarks, and appearance share a right sidebar with native editing controls; the publication reflows into the remaining width instead of being covered. The focused scene supplies the native Reader menu and shortcuts for each sidebar plus closing it. Keyboard commands and pointer controls remain available without mobile tap-zone assumptions.
 
 UI state updates stay on the main actor. File validation, image decoding, and network operations must not block interactions. Cancel obsolete work and check source/session generation before publishing results. Do not allow a cancelled decode, search, or download to overwrite current content or reading state.
 
