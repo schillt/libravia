@@ -803,7 +803,7 @@ struct ReaderView: View {
                 }
             }
             .glassEffect(reduceTransparency || contrast == .increased ? .regular : .clear, in: RoundedRectangle(cornerRadius: 20))
-            .padding(8)
+            .padding(.horizontal, 16).padding(.vertical, 12)
             // Continue the publication canvas behind the glass instead of the inspector
             // host's contrasting system background. Lists/forms hide their own fill.
             .background(readerBackground.ignoresSafeArea())
