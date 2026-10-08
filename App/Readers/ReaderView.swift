@@ -759,7 +759,7 @@ private struct BookLoadingDots: View {
             let phase = Int(timeline.date.timeIntervalSinceReferenceDate / 0.24) % 4
             HStack(spacing: 7) {
                 ForEach(0..<4) { index in
-                    Circle().fill(.primary.opacity(reduceMotion || index >= 3 - phase ? 0.95 : 0.25)).frame(width: 5, height: 5)
+                    Circle().fill(.primary.opacity(reduceMotion || index <= phase ? 0.95 : 0.25)).frame(width: 5, height: 5)
                 }
             }.padding(.horizontal, 14).padding(.vertical, 10).background(.regularMaterial, in: Capsule())
         }.accessibilityElement(children: .ignore).accessibilityLabel("Loading book")
