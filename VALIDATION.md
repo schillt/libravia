@@ -2,7 +2,22 @@
 
 This report separates historical development evidence from verification of the exact publication or TestFlight candidate. It contains aggregate results only; local logs, private servers, accounts, device identifiers, reading locations, and screenshots are excluded.
 
-## Development evidence
+## 0.2 alpha source-release checkpoint
+
+The owner authorized v0.2.0 on 2026-10-08. PR #59 reviewed feature candidate `f62951a6e67778f2ababb641a74c0ab7fbf9e2ea`; alpha squash commit `86b3fd02fb95cfc8f85d02246b61e82e85c1167a` preserves its runtime tree. The final release tag adds documentation and 0.2.0/build 54 metadata. Exact metadata/build checks and the supplementary security review are recorded in that release PR. See [release notes](docs/releases/0.2.0.md) and [handoff](docs/HANDOFF.md).
+
+| Evidence | Result | Limit |
+| --- | --- | --- |
+| Automated | 70 core tests, reader/frame checks, three report tests and trackpad checks passed | Feature candidate; metadata-only release changes checked separately |
+| Native Mac compilation | Final feature candidate build passed | Does not establish distribution entitlements or physical interaction |
+| Native WebKit | Consecutive pages, exact scrub, recount, CFI preservation, inspector/turn ordering,30 settings updates and provisional peek cancellation passed | Original synthetic fixture; does not establish the reported real-book crash resolved |
+| Security | Scan `95fd6ec3-b117-4aca-936b-eb2400a336a1`: all31 changed files, no reportable vulnerabilities, exclusions or deferred candidates | Static diff review; no adversarial runtime, live-server or signed distribution verification |
+| Physical iPhone | Prior install/launch and selected viewport/control checks | Installed candidate `8ce1dc26f714c2eebefeb0bc539b5bb42694a4f6`; final curl/search/haptics acceptance still open |
+| Physical iPad/accessibility | Not completed | Gate #28 remains open |
+
+The source-release designation is an owner decision, not evidence that omitted gates passed. No TestFlight/App Store upload, beta/preview/main promotion or new live-server validation is claimed. Remaining real-book, device and distribution gates continue below.
+
+## Historical foundation development evidence
 
 | Surface | Observed result | Limit |
 | --- | --- | --- |
@@ -16,7 +31,7 @@ This report separates historical development evidence from verification of the e
 
 Regular Xcode 27.0 was used for the latest recorded builds. The unified **LibraVia** target/scheme built for signed iOS, native macOS, and iOS Simulator. The changed bundle identity requires a fresh login; the unified-identity build had not been installed during that compile-only pass.
 
-## Current publication candidate
+## Historical 0.1 publication candidate
 
 Privacy pass removed temporary command tracing, added endpoint-aware state isolation, suppressed raw error detail, and tightened EPUB main-frame bridge/resource handling. The core suite passed 66 tests. Integrated build 53 passed the native Mac and signed iOS builds. Native Mac smoke testing verified EPUB opening under the tightened bridge/CSP, search open/close preserving the displayed page, forward/back navigation, restoration to the starting page, and normal reader close. iOS Simulator compilation also passed. The 72 staged publication files passed a targeted private-context scan, including fixture archive contents; no targeted private patterns or excluded signing/design/diagnostic artifacts were found. Staged whitespace checks passed with original upstream notices retained verbatim. These results cover build 53. No final physical-device run or TestFlight upload was performed. No historical result above establishes that candidate's privacy, distribution signing, runtime behavior, upload, or TestFlight availability. Record the final commit, aggregate test results, destination builds, and archive/upload outcomes here after verification.
 

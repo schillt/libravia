@@ -4,6 +4,10 @@ The public repository is connected to Xcode Cloud. The commands below are docume
 
 LibraVia has one shared target, scheme, and bundle identifier. iOS/iPadOS and native macOS still require separate destination archives and uploads. Use one App Store Connect app record with the matching identifier and the required platforms.
 
+## 0.2 source-release status
+
+The v0.2.0 alpha source release uses marketing version 0.2.0 and build 54. This release work does not upload binaries or configure/trigger a Cloud release workflow. See [release notes](docs/releases/0.2.0.md) and [VALIDATION.md](VALIDATION.md). Any future archive/upload must verify its own exact commit, entitlements and platform processing; development builds from build 53 are historical evidence.
+
 ## Prerequisites
 
 - Active Apple Developer membership and App Store Connect permission to create the app and upload builds.

@@ -34,7 +34,7 @@ settings = {
     'PRODUCT_BUNDLE_IDENTIFIER':'com.chameleonenterprise.LibraVia',
     'SWIFT_VERSION':'5.0', 'GENERATE_INFOPLIST_FILE':'YES',
     'INFOPLIST_KEY_CFBundleDisplayName':'LibraVia',
-    'MARKETING_VERSION':'0.1.0', 'CURRENT_PROJECT_VERSION':'53',
+    'MARKETING_VERSION':'0.2.0', 'CURRENT_PROJECT_VERSION':'54',
     'ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon',
     'CODE_SIGN_STYLE':'Automatic', 'SWIFT_EMIT_LOC_STRINGS':'YES',
     'SDKROOT':'auto', 'SUPPORTED_PLATFORMS':'iphoneos iphonesimulator macosx',
