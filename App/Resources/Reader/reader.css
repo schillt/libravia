@@ -15,3 +15,7 @@ html[data-page-style="fade"]::view-transition-new(page){animation:page-fade-in 2
 @keyframes page-fade-out{to{opacity:0}}
 @keyframes page-fade-in{from{opacity:0}}
 @media(prefers-reduced-motion:reduce){::view-transition-old(page),::view-transition-new(page){animation:none!important}}
+
+/* Decoration lives outside publication frames, preserving EPUB CFI indices. */
+.reader-chapter-break { position:absolute; top:-36px; left:0; right:0; height:28px; display:flex; align-items:center; gap:14px; justify-content:center; font:500 13px -apple-system,sans-serif; color:inherit; opacity:.7; pointer-events:none; }
+.reader-chapter-break::before, .reader-chapter-break::after { content:""; flex:1; height:1px; background:currentColor; opacity:.3; }

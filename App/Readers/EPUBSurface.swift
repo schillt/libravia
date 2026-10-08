@@ -449,13 +449,23 @@ struct EPUBSurface: PlatformViewRepresentable {
             case "position":
                 guard let fraction = value["fraction"] as? Double, fraction.isFinite else { return }
                 controller.currentChapter = value["href"] as? String
+                controller.chapterTitle = value["chapterTitle"] as? String ?? "Reading"
                 controller.chapterPage = value["chapterPage"] as? Int ?? 0
                 controller.chapterPageCount = value["chapterPageCount"] as? Int ?? 0
-                controller.estimatedBookPages = value["bookPageEstimate"] as? Int ?? 0
+                controller.bookPage = value["bookPage"] as? Int ?? 0
+                controller.bookPageCount = value["bookPageCount"] as? Int ?? 0
                 controller.update(ReadingPosition(fraction: min(1, max(0, fraction)), cfi: value["cfi"] as? String))
                 #if os(iOS)
                 cacheCurrentPage()
                 #endif
+            case "pagination":
+                controller.bookPageCount = value["pages"] as? Int ?? 0
+                controller.paginationFailed = value["failed"] as? Bool ?? false
+                controller.pageChapters = (value["chapters"] as? [[String: Any]] ?? []).compactMap { item in
+                    guard let number = item["number"] as? Int, let title = item["title"] as? String,
+                          let start = item["start"] as? Double, let end = item["end"] as? Double else { return nil }
+                    return ReaderChapter(number: number, title: title, href: item["href"] as? String, start: start, end: end)
+                }
             case "toc", "results":
                 let links = (value["items"] as? [[String: String]] ?? []).compactMap { item -> ReaderLink? in guard let id = item["id"], let title = item["title"] else { return nil }; return ReaderLink(id: id, title: title, context: item["context"]) }
                 if kind == "toc" { controller.toc = links } else { controller.completeSearch(links, id: value["id"] as? String ?? "") }
@@ -464,7 +474,7 @@ struct EPUBSurface: PlatformViewRepresentable {
                     guard let number = item["number"] as? Int, let title = item["title"] as? String,
                           let start = item["start"] as? Double, let end = item["end"] as? Double,
                           start.isFinite, end.isFinite, end > start else { return nil }
-                    return ReaderChapter(number: number, title: title, start: start, end: end)
+                    return ReaderChapter(number: number, title: title, href: item["href"] as? String, start: start, end: end)
                 }
             case "chapterSnippet":
                 if let number = value["number"] as? Int, let snippet = value["text"] as? String {

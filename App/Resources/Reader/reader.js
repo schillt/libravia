@@ -3,15 +3,136 @@ let book, rendition, current, ready = false, searchGeneration = 0, scrolling = f
 let sectionLocationCounts = new Map(), observedSectionPages = new Map();
 const chapterSnippetCache = new Map();
 const send = (kind, value = {}) => window.webkit.messageHandlers.reader.postMessage({kind, ...value});
-function preferences(p) {
-  if (!rendition) return;
-  scrolling = p.scrolling;
-  pageTransition = ['instant','fade','slide'].includes(p.pageTransition) ? p.pageTransition : 'slide';
+// A page is one visible reader spread. Count a separate sandboxed rendition;
+// never move the live reader or use character percentages as page indices.
+let layoutPages = [], paginationGeneration = 0, paginationTask, paginationKey, latestPreferences, publicationURL;
+let navigationTitles = new Map();
+function paginationSignature(p = latestPreferences) {
+  return JSON.stringify([viewportSize?.width, viewportSize?.height, p?.font, p?.fontSize, p?.lineHeight, p?.margin, p?.scrolling]);
+}
+function invalidatePagination() {
+  ++paginationGeneration;
+  layoutPages = []; paginationKey = undefined;
+  send('pagination', {pages:0, chapters:[]});
+}
+function paginationPosition(location) {
+  if (scrolling || !layoutPages.length) return {bookPage:0, bookPageCount:0};
+  const divisor = rendition.manager?.layout?.divisor || 1;
+  const localPage = Math.ceil((location.start.displayed?.page || 1) / divisor);
+  const index = layoutPages.findIndex(page => page.sectionIndex === location.start.index && page.localPage === localPage);
+  return {bookPage:index < 0 ? 0 : index + 1, bookPageCount:layoutPages.length};
+}
+function sanitizePublication(document) {
+  document.querySelectorAll('script,object,embed,iframe,form,base').forEach(node => node.remove());
+  document.querySelectorAll('*').forEach(node => Array.from(node.attributes).forEach(attr => {
+    if (/^on/i.test(attr.name) || ((/^(src|href|xlink:href|poster|action)$/i).test(attr.name) && /^(https?:|\/\/|javascript:)/i.test(attr.value))) node.removeAttribute(attr.name);
+  }));
+}
+function setReaderTheme(target, p) {
   const themes = {light:['#ffffff','#202020'],sepia:['#f4ecd8','#342c20'],dark:['#171717','#dedede']};
   const colors = themes[p.theme] || themes.light;
+  target.themes.default({'body':{'color':colors[1]+' !important','background':colors[0]+' !important','font-family':p.font+' !important','font-size':p.fontSize+'px !important','line-height':p.lineHeight+' !important','padding-top':'0 !important','padding-bottom':'0 !important','margin-top':'0 !important','margin-bottom':'0 !important','padding-left':p.margin+'px !important','padding-right':p.margin+'px !important'},'a':{'color':'inherit'}});
+  return colors;
+}
+async function waitForAssets(view) {
+  const document = view.contents.document;
+  await document.fonts?.ready;
+  await Promise.all(Array.from(document.images).map(image => image.complete ? Promise.resolve() : new Promise(resolve => {
+    image.addEventListener('load', resolve, {once:true}); image.addEventListener('error', resolve, {once:true});
+  })));
+  view.expand();
+}
+function requestPagination() {
+  if (scrolling || !ready || !publicationURL || (typeof ePub === 'undefined' || typeof ePub.Rendition !== 'function')) return;
+  const key = paginationSignature();
+  if (key === paginationKey) return paginationTask;
+  paginationKey = key;
+  const generation = ++paginationGeneration, p = {...latestPreferences}, size = {...viewportSize};
+  layoutPages = [];
+  send('pagination', {pages:0, chapters:[]});
+  const task = (async () => {
+    let counterBook, counter, host;
+    try {
+      counterBook = ePub(publicationURL, {openAs:'opf'});
+      await counterBook.ready;
+      if (generation !== paginationGeneration) return;
+      counterBook.spine.hooks.content.register(sanitizePublication);
+      host = document.createElement('div');
+      host.setAttribute('aria-hidden','true'); host.inert = true;
+      Object.assign(host.style, {position:'fixed',left:'-100000px',top:'0',width:size.width+'px',height:size.height+'px',visibility:'hidden',pointerEvents:'none'});
+      document.body.appendChild(host);
+      counter = new ePub.Rendition(counterBook, {...size,manager:'default',flow:'paginated',resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false});
+      counter.attachTo(host);
+      setReaderTheme(counter, p);
+      const pages = [];
+      for (const section of counterBook.spine.spineItems.filter(section => section.linear)) {
+        if (generation !== paginationGeneration) return;
+        await withPaginationTimeout(counter.display(section.href));
+        const view = counter.manager.views.find(section);
+        await withPaginationTimeout(waitForAssets(view));
+        if (generation !== paginationGeneration) return;
+        const layout = counter.manager.layout;
+        if (view.settings.axis !== 'horizontal' || layout.name === 'pre-paginated') throw Error('Unsupported page map');
+        const count = layout.count(view.width()).spreads;
+        for (let page = 0; page < count; page++) {
+          pages.push({sectionIndex:section.index,href:section.href,localPage:page+1});
+          if (page % 12 === 0) { await paginationYield(); if (generation !== paginationGeneration) return; }
+        }
+        section.unload();
+        await paginationYield();
+      }
+      if (generation !== paginationGeneration) return;
+      layoutPages = pages;
+      const chapters = [];
+      for (let i = 0; i < pages.length; i++) {
+        if (i && pages[i].sectionIndex === pages[i-1].sectionIndex) continue;
+        chapters.push({number:chapters.length+1,href:pages[i].href,title:navigationTitles.get(pages[i].sectionIndex) || `Section ${chapters.length+1}`,start:i/Math.max(1,pages.length-1),end:1});
+        if (chapters.length > 1) chapters[chapters.length-2].end = chapters.at(-1).start;
+      }
+      send('pagination', {pages:pages.length,chapters});
+      reportPosition(rendition.location);
+    } catch (error) {
+      if (generation === paginationGeneration) { layoutPages = []; send('pagination', {pages:0,chapters:[],failed:true}); }
+    } finally {
+      counter?.destroy(); host?.remove(); counterBook?.destroy();
+    }
+  })();
+  paginationTask = task;
+  return task;
+}
+const paginationYield = () => new Promise(resolve => setTimeout(resolve, 0));
+function withPaginationTimeout(task) {
+  let timer;
+  return Promise.race([task, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Pagination timeout')), 15000); })]).finally(() => clearTimeout(timer));
+}
+async function seekLayoutPage(page) {
+  const generation = paginationGeneration;
+  await paginationTask;
+  if (generation !== paginationGeneration || scrolling || !layoutPages.length) return;
+  const target = layoutPages[Math.min(layoutPages.length-1, Math.max(0, Math.round(page)))];
+  await rendition.display(target.href);
+  const manager = rendition.manager;
+  const view = manager.views.find(book.spine.get(target.href));
+  if (!view || generation !== paginationGeneration) return;
+  await waitForAssets(view);
+  await nextPaint();
+  if (generation !== paginationGeneration) return;
+  // Screen destinations use the current layout's exact spread offset. A text
+  // CFI can resolve to an earlier column when its range spans a page boundary.
+  manager.moveTo({left:(target.localPage - 1) * manager.layout.delta,top:0}, view.width());
+  await rendition.reportLocation();
+}
+
+function preferences(p) {
+  if (!rendition) return;
+  latestPreferences = {...p};
+  scrolling = p.scrolling;
+  pageTransition = ['instant','fade','slide'].includes(p.pageTransition) ? p.pageTransition : 'slide';
+  const colors = setReaderTheme(rendition, p);
   document.body.style.background = colors[0];
-  rendition.themes.default({'body':{'color':colors[1]+' !important','background':colors[0]+' !important','font-family':p.font+' !important','font-size':p.fontSize+'px !important','line-height':p.lineHeight+' !important','padding-top':'0 !important','padding-bottom':'0 !important','margin-top':'0 !important','margin-bottom':'0 !important','padding-left':p.margin+'px !important','padding-right':p.margin+'px !important'},'a':{'color':'inherit'}});
+  document.body.style.color = colors[1];
   rendition.flow(p.scrolling ? 'scrolled-doc' : 'paginated');
+  refreshChapterBreaks();
 }
 // One layout operation owns relocation suppression at a time. Requests arriving
 // during display are coalesced and applied before reporting positions resumes.
@@ -31,14 +152,17 @@ function resizeViewport(size) {
   const next = {width:Math.floor(size.width), height:Math.floor(size.height)};
   if (searchPresentation || next.width <= 0 || next.height <= 0 || !rendition) return;
   if (viewportSize?.width === next.width && viewportSize?.height === next.height) return;
+  invalidatePagination();
   viewportSize = next;
   observedSectionPages.clear();
   // EPUB.js already restores the CFI when resize changes the stage. Do not
   // redisplay that boundary CFI a second time; it can map to the preceding page.
   rendition.resize(next.width, next.height);
+  requestPagination();
 }
 function queueLayout(p, resize = false) {
   if (p || resize) observedSectionPages.clear();
+  if (p && paginationSignature(p) !== paginationSignature()) invalidatePagination();
   if (p) pendingPreferences = p;
   pendingResize = pendingResize || resize;
   if (layoutTask) return layoutTask;
@@ -55,6 +179,7 @@ function queueLayout(p, resize = false) {
     } catch (_) { send('error'); }
     finally {
       restoring = false; layoutTask = undefined;
+      requestPagination();
       if (book?.locations && rendition.location?.start?.cfi) reportPosition(rendition.location);
     }
   });
@@ -140,24 +265,10 @@ function chapterRanges(items) {
   return chapters.map(([index, start], position) => ({
     number: position + 1,
     title: named.get(index) || `Section ${position + 1}`,
+    href:book.spine.get(index)?.href,
     start,
     end: position + 1 < chapters.length ? chapters[position + 1][1] : 1
   }));
-}
-function estimatedBookPages(location) {
-  const section = book.spine.get(location.start.cfi);
-  const sectionLocations = sectionLocationCounts.get(section?.index) || 0;
-  const displayedPages = location.start.displayed?.total || 0;
-  if (!scrolling && sectionLocations >= 1 && displayedPages >= 1) {
-    observedSectionPages.set(section.index, displayedPages);
-  }
-  let locations = 0, pages = 0;
-  for (const [index, count] of sectionLocationCounts) {
-    const observed = observedSectionPages.get(index);
-    if (observed) { locations += count; pages += observed; }
-  }
-  if (!locations) return 0;
-  return Math.max(displayedPages, Math.round(book.locations.length() * pages / locations));
 }
 async function chapterSnippet(value) {
   const section = book.spine.get(book.locations.cfiFromPercentage(Math.min(1, Math.max(0, value.fraction))));
@@ -246,16 +357,33 @@ function turn(direction, preview = false) {
   });
   return turnTask;
 }
+function refreshChapterBreaks() {
+  const views = rendition?.views?.();
+  for (const view of Array.isArray(views) ? views : views?.displayed?.() || []) {
+    const element = view.element;
+    if (!element) continue;
+    let divider = element.querySelector('.reader-chapter-break');
+    const visible = scrolling && view.section.index !== book.spine.first().index;
+    element.style.marginTop = visible ? '44px' : '';
+    if (!visible) { divider?.remove(); continue; }
+    if (!divider) { divider = document.createElement('div'); divider.className = 'reader-chapter-break'; element.prepend(divider); }
+    const title = navigationTitles.get(view.section.index) || 'Next section';
+    divider.textContent = title; divider.setAttribute('role','separator'); divider.setAttribute('aria-label',title);
+  }
+}
 function reportPosition(location) {
   if (restoring || previewing || !location?.start?.cfi) return;
   current = location.start.cfi;
   const displayed = location.start.displayed || {};
-  send('position',{cfi:current,href:location.start.href,fraction:book.locations.percentageFromCfi(current),chapterPage:displayed.page || 0,chapterPageCount:displayed.total || 0,bookPageEstimate:estimatedBookPages(location)});
+  send('position',{cfi:current,href:location.start.href,fraction:book.locations.percentageFromCfi(current),chapterTitle:navigationTitles.get(location.start.index) || 'Reading',chapterPage:Math.ceil((displayed.page || 0)/(rendition.manager?.layout?.divisor || 1)),chapterPageCount:Math.ceil((displayed.total || 0)/(rendition.manager?.layout?.divisor || 1)),...paginationPosition(location)});
 }
 window.readerCommand = async ({name,value}) => {
   try {
     switch(name) {
       case 'open':
+        invalidatePagination();
+        publicationURL = value.url;
+        ready = false;
         nativePageTurns = !!value.nativeGestures;
         send('stage',{label:'Loading publication…'});
         book = ePub(value.url, {openAs:'opf'});
@@ -269,12 +397,7 @@ window.readerCommand = async ({name,value}) => {
         // focus may resize the window without changing the document's layout box.
         rendition = book.renderTo('reader',{...viewportSize,resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false,flow:value.preferences.scrolling?'scrolled-doc':'paginated'});
         // Strip active and remote content before any chapter is rendered.
-        book.spine.hooks.content.register((document) => {
-          document.querySelectorAll('script,object,embed,iframe,form,base').forEach(node => node.remove());
-          document.querySelectorAll('*').forEach(node => Array.from(node.attributes).forEach(attr => {
-            if (/^on/i.test(attr.name) || ((/^(src|href|xlink:href|poster|action)$/i).test(attr.name) && /^(https?:|\/\/|javascript:)/i.test(attr.value))) node.removeAttribute(attr.name);
-          }));
-        });
+        book.spine.hooks.content.register(sanitizePublication);
         rendition.hooks.content.register(contents => {
           if (nativePageTurns) return; // iOS recognizes swipes on WKWebView's scroll view.
           let start, swiped = false;
@@ -301,9 +424,13 @@ window.readerCommand = async ({name,value}) => {
         await seek(value);
         ready = true;
         rendition.on('relocated', reportPosition);
+        rendition.on('rendered', refreshChapterBreaks);
         const contents = flatten((await book.loaded.navigation).toc);
         send('toc',{items:contents});
+        navigationTitles = new Map();
+        for (const item of contents) { const section = book.spine.get(item.id); if (section && !navigationTitles.has(section.index)) navigationTitles.set(section.index, item.title); }
         send('chapters',{items:chapterRanges(contents)});
+        refreshChapterBreaks();
         current = rendition.location?.start?.cfi;
         reportPosition(rendition.location);
         viewportObserver = new ResizeObserver(entries => {
@@ -311,6 +438,7 @@ window.readerCommand = async ({name,value}) => {
         });
         viewportObserver.observe(readerElement);
         send('ready');
+        requestPagination();
         break;
       case 'gesture': {
         const frames = Array.from(document.querySelectorAll('iframe'));
@@ -367,6 +495,7 @@ window.readerCommand = async ({name,value}) => {
       case 'clearSelection': clearChapterSelections(); break;
       case 'location': await layoutTask; await displayLocation(value); break;
       case 'seek': await layoutTask; await seek(value); break;
+      case 'layoutPage': await layoutTask; await seekLayoutPage(value); break;
       case 'preferences': {
         clearTimeout(preferenceTimer);
         preferenceTimer = setTimeout(() => queueLayout(value), 180);

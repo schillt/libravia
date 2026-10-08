@@ -95,11 +95,14 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  vm.runInContext('reportPosition(mockRendition.location)',context);
  assert.equal(messages.at(-1).chapterPage,3);
  assert.equal(messages.at(-1).chapterPageCount,10);
- assert.equal(messages.at(-1).bookPageEstimate,20,'Book pages are estimated from observed rendered pages per generated location');
- vm.runInContext('sectionLocationCounts = new Map([[1, 1]]); observedSectionPages.clear()',context);
- context.mockRendition.location={start:{cfi:'short-cfi',href:'short.xhtml',displayed:{page:1,total:1}}};
+ assert.equal(messages.at(-1).bookPageCount,0,'No invented total before layout counting completes');
+ vm.runInContext("layoutPages = [{sectionIndex:0,localPage:1},{sectionIndex:0,localPage:2},{sectionIndex:0,localPage:3},{sectionIndex:1,localPage:1}]; navigationTitles=new Map([[0,'Chapter 7']])",context);
+ context.mockRendition.location.start.index=0;
  vm.runInContext('reportPosition(mockRendition.location)',context);
- assert.equal(messages.at(-1).bookPageEstimate,6,'A one-page opening section still provides a book page estimate');
+ assert.equal(messages.at(-1).bookPage,3,'Book page is the actual rendered page, not a character percentage');
+ assert.equal(messages.at(-1).bookPageCount,4);
+ assert.equal(messages.at(-1).chapterTitle,'Chapter 7','Contents title is independent of spine ordinal');
+ vm.runInContext('layoutPages=[]',context);
  context.mockRendition.views=()=>[{section}];
  assert.equal(vm.runInContext('sectionIsDisplayed(mockBook.spine.spineItems[0])',context),true,'Displayed EPUB.js views are an array and must not be unloaded');
  context.mockRendition.views=()=>({displayed:()=>[]});
