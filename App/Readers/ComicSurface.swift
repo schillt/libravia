@@ -16,7 +16,7 @@ struct ComicSurface: View {
                     else { ProgressView().frame(width: geometry.size.width, height: geometry.size.height) }
                 }
             }.background(Color.black.opacity(0.9))
-            .onTapGesture { controller.controlsVisible.toggle() }
+            .onTapGesture(coordinateSpace: .local) { point in controller.tapped(at: point.x / max(1, geometry.size.width), canTurn: zoom == 1 && !fitWidth) }
             .simultaneousGesture(DragGesture(minimumDistance: 60).onEnded { value in guard zoom == 1, abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }; setPage(page + (value.translation.width < 0 ? 1 : -1)) })
             .gesture(MagnifyGesture().onEnded { value in zoom = min(4, max(1, zoom * value.magnification)) })
         }

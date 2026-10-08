@@ -51,16 +51,15 @@ struct PDFSurface: PlatformViewRepresentable {
         func cleanup() { searchDocument?.delegate = nil; searchDocument?.cancelFindString(); if let observer { NotificationCenter.default.removeObserver(observer) }; controller.command = nil }
         #if os(iOS)
         @objc func tapped(_ gesture: UITapGestureRecognizer) {
-            guard let view, view.currentSelection == nil, let page = view.page(for: gesture.location(in: view), nearest: false) else { return }
-            let point = view.convert(gesture.location(in: view), to: page)
-            guard page.annotation(at: point) == nil else { return }
-            controller.controlsVisible.toggle()
+            guard let view, view.currentSelection == nil else { return }
+            if let page = view.page(for: gesture.location(in: view), nearest: false), page.annotation(at: view.convert(gesture.location(in: view), to: page)) != nil { return }
+            controller.tapped(at: gesture.location(in: view).x / max(1, view.bounds.width), canTurn: view.scaleFactor <= view.scaleFactorForSizeToFit * 1.05)
         }
         #else
         @objc func clicked(_ gesture: NSClickGestureRecognizer) {
-            guard let view, view.currentSelection == nil, let page = view.page(for: gesture.location(in: view), nearest: false) else { return }
-            guard page.annotation(at: view.convert(gesture.location(in: view), to: page)) == nil else { return }
-            controller.controlsVisible.toggle()
+            guard let view, view.currentSelection == nil else { return }
+            if let page = view.page(for: gesture.location(in: view), nearest: false), page.annotation(at: view.convert(gesture.location(in: view), to: page)) != nil { return }
+            controller.tapped(at: gesture.location(in: view).x / max(1, view.bounds.width), canTurn: view.scaleFactor <= view.scaleFactorForSizeToFit * 1.05)
         }
         #endif
         func pageChanged() {

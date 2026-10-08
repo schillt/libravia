@@ -15,7 +15,25 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(preferences.theme, "sepia")
         XCTAssertEqual(preferences.fontSize, 23)
         XCTAssertEqual(preferences.pageTransition, "slide")
+        XCTAssertEqual(preferences.pageTapZoneFraction, 0.2)
         XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: JSONEncoder().encode(preferences)), preferences)
+    }
+    func testReaderTapZonesPreserveCenterAndDisableTurnsWhenZoomedOrNotReady() {
+        XCTAssertEqual(ReaderTapAction.action(at: 0.05, edge: 0.2, canTurn: true), .previous)
+        XCTAssertEqual(ReaderTapAction.action(at: 0.95, edge: 0.2, canTurn: true), .next)
+        for center in [0.2, 0.5, 0.8] { XCTAssertEqual(ReaderTapAction.action(at: center, edge: 0.2, canTurn: true), .controls) }
+        XCTAssertEqual(ReaderTapAction.action(at: 0.15, edge: 0.1, canTurn: true), .controls)
+        XCTAssertEqual(ReaderTapAction.action(at: 0.15, edge: 0.3, canTurn: true), .previous)
+        for point in [0.0, 0.5, 1.0, Double.nan] { XCTAssertEqual(ReaderTapAction.action(at: point, edge: 0.2, canTurn: false), .controls) }
+        XCTAssertEqual(ReaderTapAction.action(at: -1, edge: 0.2, canTurn: true), .controls)
+    }
+    func testTapZoneWidthPersistsAndInvalidSavedWidthsKeepCenterReachable() throws {
+        var preferences = ReaderPreferences(); preferences.pageTapZoneFraction = 0.25
+        XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: JSONEncoder().encode(preferences)).pageTapZoneFraction, 0.25)
+        for (saved, expected) in [(0.01, 0.1), (0.9, 0.3)] {
+            let data = Data("{\"pageTapZoneFraction\":\(saved)}".utf8)
+            XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: data).pageTapZoneFraction, expected)
+        }
     }
     func testProgressInteroperabilityUnits() {
         XCTAssertEqual(ReadingPosition(fraction: 0.42).ticks(for: .epub), 4_200_000)

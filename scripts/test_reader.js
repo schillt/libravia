@@ -85,6 +85,38 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  await context.window.readerCommand({name:'clearSelection'});
  assert.equal(cleared,3,'Native animation completion can release selection created after relocation');
  context.document.querySelectorAll=()=>[];
+ context.window.matchMedia=()=>({matches:true});
+ // Tap zones use the whole reader viewport and the native animation route.
+ context.document.getElementById=()=>({getBoundingClientRect:()=>({left:20,width:1000})});
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:50,y:40}});
+ assert.equal(messages.at(-1).direction,'previous');
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:1000,y:40}});
+ assert.equal(messages.at(-1).direction,'next');
+ assert.equal(turns,3,'Native edge taps request one animation without turning twice');
+ const edgeMessageCount=messages.length;
+ context.document.querySelectorAll=()=>[{getBoundingClientRect:()=>({left:20,top:0,right:1020,bottom:100}),contentWindow:{getSelection:()=>({toString:()=>"selected",removeAllRanges:()=>cleared++})}}];
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:1000,y:40}});
+ assert.equal(messages.length,edgeMessageCount,'Selection dismissal does not turn or toggle from an edge');
+ context.document.querySelectorAll=()=>[{getBoundingClientRect:()=>({left:20,top:0,right:1020,bottom:100}),contentWindow:{getSelection:()=>({toString:()=>""})},contentDocument:{elementFromPoint:()=>({closest:()=>({})})}}];
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:1000,y:40}});
+ assert.equal(messages.length,edgeMessageCount,'An interactive link in an edge zone keeps its original action');
+ context.document.querySelectorAll=()=>[];
+ for(const x of [220,520,820]) {
+   await context.window.readerCommand({name:'gesture',value:{action:'tap',x,y:40}});
+   assert.equal(messages.at(-1).kind,'toggleControls','Center and boundaries reveal controls');
+ }
+ vm.runInContext('scrolling=true',context);
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:50,y:40}});
+ assert.equal(messages.at(-1).kind,'toggleControls','Vertical reading keeps taps for controls');
+ vm.runInContext('scrolling=false;pageTapZoneFraction=0.3',context);
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:270,y:40}});
+ assert.equal(messages.at(-1).direction,'previous','Wider edge setting applies immediately');
+ vm.runInContext('pageTapZoneFraction=0.2;nativePageTurns=false',context);
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:50,y:40}});
+ assert.equal(turns,2,'Desktop edge tap turns exactly one page');
+ await context.window.readerCommand({name:'gesture',value:{action:'tap',x:1000,y:40}});
+ assert.equal(turns,3);
+ delete context.document.getElementById;
  vm.runInContext('nativePageTurns=false',context);
  context.window.matchMedia=()=>({matches:true});
  await context.window.readerCommand({name:'previous'});

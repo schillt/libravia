@@ -1,17 +1,32 @@
 'use strict';
-let book, rendition, current, ready = false, searchGeneration = 0, scrolling = false, preferenceTimer, restoring = false, pageTransition = 'slide', nativePageTurns = false;
+let book, rendition, current, ready = false, searchGeneration = 0, scrolling = false, preferenceTimer, restoring = false, pageTransition = 'slide', nativePageTurns = false, pageTapZoneFraction = 0.2;
 let sectionLocationCounts = new Map(), observedSectionPages = new Map();
 const chapterSnippetCache = new Map();
 const send = (kind, value = {}) => window.webkit.messageHandlers.reader.postMessage({kind, ...value});
 function preferences(p) {
   if (!rendition) return;
   scrolling = p.scrolling;
+  pageTapZoneFraction = Number.isFinite(p.pageTapZoneFraction) ? Math.min(0.3, Math.max(0.1, p.pageTapZoneFraction)) : 0.2;
   pageTransition = ['instant','fade','slide'].includes(p.pageTransition) ? p.pageTransition : 'slide';
   const themes = {light:['#ffffff','#202020'],sepia:['#f4ecd8','#342c20'],dark:['#171717','#dedede']};
   const colors = themes[p.theme] || themes.light;
   document.body.style.background = colors[0];
   rendition.themes.default({'body':{'color':colors[1]+' !important','background':colors[0]+' !important','font-family':p.font+' !important','font-size':p.fontSize+'px !important','line-height':p.lineHeight+' !important','padding-top':'0 !important','padding-bottom':'0 !important','margin-top':'0 !important','margin-bottom':'0 !important','padding-left':p.margin+'px !important','padding-right':p.margin+'px !important'},'a':{'color':'inherit'}});
   rendition.flow(p.scrolling ? 'scrolled-doc' : 'paginated');
+}
+function pageTapAction(x) {
+  const rect = document.getElementById?.('reader')?.getBoundingClientRect();
+  const fraction = rect?.width > 0 ? (x - rect.left) / rect.width : NaN;
+  if (!ready || scrolling || !Number.isFinite(fraction) || fraction < 0 || fraction > 1) return 'controls';
+  if (fraction < pageTapZoneFraction) return 'previous';
+  if (fraction > 1 - pageTapZoneFraction) return 'next';
+  return 'controls';
+}
+async function pageTap(x) {
+  const action = pageTapAction(x);
+  if (action === 'controls') send('toggleControls');
+  else if (nativePageTurns) send('swipe', {direction:action});
+  else await turn(action);
 }
 // One layout operation owns relocation suppression at a time. Requests arriving
 // during display are coalesced and applied before reporting positions resumes.
@@ -277,20 +292,20 @@ window.readerCommand = async ({name,value}) => {
         });
         rendition.hooks.content.register(contents => {
           if (nativePageTurns) return; // iOS recognizes swipes on WKWebView's scroll view.
-          let start, swiped = false;
-          contents.document.addEventListener('touchstart', e => { swiped = false; if (e.touches.length === 1 && !e.target.closest('a,button,input,select,textarea')) start = {x:e.touches[0].clientX,y:e.touches[0].clientY}; else start = null; }, {passive:true});
+          let start;
+          contents.document.addEventListener('touchstart', e => { if (e.touches.length === 1 && !e.target.closest('a,button,input,select,textarea')) start = {x:e.touches[0].clientX,y:e.touches[0].clientY}; else start = null; }, {passive:true});
           contents.document.addEventListener('touchcancel', () => { start = null; }, {passive:true});
           contents.document.addEventListener('touchend', e => {
             if (!start || scrolling || contents.window.getSelection()?.toString()) return;
             const touch = e.changedTouches[0], dx = touch.clientX-start.x, dy = touch.clientY-start.y;
             start = null;
             if (Math.abs(dx)>60 && Math.abs(dx)>Math.abs(dy)*1.5) {
-              swiped = true;
               const direction = dx<0 ? 'next' : 'previous';
               window.readerCommand({name:direction});
             }
           }, {passive:true});
-          contents.document.addEventListener('click', e => { if (!swiped && !e.target.closest('a,button,input,select,textarea') && !contents.window.getSelection()?.toString()) send('toggleControls'); });
+          // Taps use native recognizers on both platforms. Sandboxed publication
+          // frames must never require scripts enabled to navigate or show controls.
         });
         preferences(value.preferences);
         send('stage',{label:'Preparing reading positions…'});
@@ -325,7 +340,7 @@ window.readerCommand = async ({name,value}) => {
           const target = frame.contentDocument?.elementFromPoint(value.x - rect.left, value.y - rect.top);
           if (target?.closest('a,button,input,select,textarea')) return;
         }
-        if (value.action === 'tap') send('toggleControls');
+        if (value.action === 'tap') await pageTap(value.x);
         else if (!scrolling && (value.action === 'next' || value.action === 'previous')) {
           if (nativePageTurns) send('swipe',{direction:value.action});
           else await turn(value.action);

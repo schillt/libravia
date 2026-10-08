@@ -33,6 +33,10 @@ struct EPUBSurface: PlatformViewRepresentable {
         web.scrollView.panGestureRecognizer.require(toFail: pan)
         web.scrollView.isScrollEnabled = false
         coordinator.pagePan = pan
+        #else
+        let tap = NSClickGestureRecognizer(target: coordinator, action: #selector(Coordinator.readerClick(_:)))
+        tap.delaysPrimaryMouseButtonEvents = false
+        web.addGestureRecognizer(tap)
         #endif
         web.load(URLRequest(url: URL(string: "appbook://local/reader/index.html")!))
         controller.command = { [weak coordinator] name, value in coordinator?.send(name, value) }
@@ -93,6 +97,15 @@ struct EPUBSurface: PlatformViewRepresentable {
         private var cacheRequest = UUID()
         #endif
         init(prepared: PreparedBook, controller: ReaderController) { self.prepared = prepared; self.controller = controller }
+        #if os(macOS)
+        @objc func readerClick(_ gesture: NSClickGestureRecognizer) {
+            guard let web else { return }
+            let point = gesture.location(in: web)
+            // WebKit uses top-left document coordinates; NSView may be unflipped.
+            let y = web.isFlipped ? point.y : web.bounds.height - point.y
+            send("gesture", ["action": "tap", "x": point.x, "y": y])
+        }
+        #endif
         #if os(iOS)
         @objc func readerTap(_ gesture: UITapGestureRecognizer) {
             let point = gesture.location(in: web)
