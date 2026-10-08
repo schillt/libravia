@@ -129,7 +129,7 @@ function preferences(p) {
   if (!rendition) return;
   latestPreferences = {...p};
   scrolling = p.scrolling;
-  pageTransition = ['instant','fade','slide'].includes(p.pageTransition) ? p.pageTransition : 'slide';
+  pageTransition = p.pageTransition === 'curl' ? 'fade' : ['instant','fade','slide'].includes(p.pageTransition) ? p.pageTransition : 'slide';
   const colors = setReaderTheme(rendition, p);
   document.body.style.background = colors[0];
   document.body.style.color = colors[1];
@@ -333,10 +333,17 @@ window.readerCanTurn = (x, y) => {
   }
   return true;
 };
-const nextPaint = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+// WebKit may suspend animation frames beneath a native snapshot or in an
+// occluded window. Rendering must not wait indefinitely for visibility.
+const nextPaint = () => new Promise(resolve => {
+  let finished = false;
+  const complete = () => { if (!finished) { finished = true; clearTimeout(timeout); resolve(); } };
+  const timeout = setTimeout(complete, 80);
+  requestAnimationFrame(() => requestAnimationFrame(complete));
+});
 function turn(direction, preview = false, request = null) {
   // WebKit captures both rendered pages; EPUB.js only advances once between snapshots.
-  // Keep the next gesture queued until both surfaces have finished moving.
+  // Serialize rendering only. Native decoration never blocks the next input.
   turnTask = turnTask.catch(() => {}).then(async () => {
     await layoutTask;
     if (scrolling) return;
@@ -385,7 +392,15 @@ let snapshotTask = Promise.resolve();
 window.readerSnapshotOrigin = () => {
   if (!ready || scrolling || restoring || !rendition.location?.start) return null;
   const start = rendition.location.start, divisor = rendition.manager.layout.divisor || 1;
-  return {cfi:start.cfi,href:start.href,page:Math.floor(((start.displayed?.page || 1)-1)/divisor),size:{...viewportSize}};
+  const regions = [];
+  for (const frame of document.querySelectorAll('iframe')) {
+    const rect = frame.getBoundingClientRect();
+    if (rect.bottom <= 0 || rect.top >= viewportSize.height || rect.right <= 0 || rect.left >= viewportSize.width) continue;
+    for (const link of frame.contentDocument?.querySelectorAll('a,button,input,select,textarea') || []) {
+      for (const box of link.getClientRects()) regions.push({x:rect.left+box.left,y:rect.top+box.top,width:box.width,height:box.height});
+    }
+  }
+  return {regions,cfi:start.cfi,href:start.href,page:Math.floor(((start.displayed?.page || 1)-1)/divisor),size:{...viewportSize}};
 };
 async function renderSnapshot(value) {
   if (!book) {
@@ -394,6 +409,8 @@ async function renderSnapshot(value) {
     book.spine.hooks.content.register(sanitizePublication);
     rendition = book.renderTo('reader', {...value.origin.size,manager:'continuous',flow:'paginated',resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false});
     await withPaginationTimeout(rendition.started);
+    // display is queued behind stage attachment; started alone is earlier.
+    await withPaginationTimeout(rendition.display(value.origin.href));
     rendition.manager.viewSettings.forceEvenPages = true;
   }
   viewportSize = {...value.origin.size};
@@ -443,6 +460,13 @@ window.readerCommand = async ({name,value}) => {
         // Strip active and remote content before any chapter is rendered.
         book.spine.hooks.content.register(sanitizePublication);
         rendition.hooks.content.register(contents => {
+          contents.document.addEventListener('selectionchange', () => {
+            const active = Array.from(document.querySelectorAll('iframe')).some(frame => {
+              const rect = frame.getBoundingClientRect();
+              return rect.bottom > 0 && rect.top < viewportSize.height && frame.contentWindow?.getSelection()?.toString();
+            });
+            send('selection',{active});
+          });
           if (nativePageTurns) return; // iOS recognizes swipes on WKWebView's scroll view.
           let start, swiped = false;
           contents.document.addEventListener('touchstart', e => { swiped = false; if (e.touches.length === 1 && !e.target.closest('a,button,input,select,textarea')) start = {x:e.touches[0].clientX,y:e.touches[0].clientY}; else start = null; }, {passive:true});

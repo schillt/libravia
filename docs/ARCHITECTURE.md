@@ -46,6 +46,14 @@ Persist exact EPUB CFIs and the existing provider-compatible progress fraction i
 
 Verify compact and two-column pagination, exact scrubbing, reflow and isolated counting with native WebKit fixtures. Fixed-layout and vertical-writing count support, unusual publications, asset timing and large-book counting performance need explicit acceptance; never substitute character estimates for exact page numbers.
 
+## Page-turn interaction contract
+
+On iPhone/iPad, card dragging uses an isolated sanitized WebKit rendition to prepare genuine adjacent-page images. Keep only the current/next/previous images, keyed by CFI, viewport and appearance. Invalidate obsolete work after navigation or reflow. The preview renderer cannot publish reading positions or provider progress. Peeking/cancelling leaves the live reader unchanged; release intent combines distance, velocity and reversal before committing one turn.
+
+Accept rapid input while decoration settles. Interrupt card settling on new input and serialize only live rendering, preserving ordered inputs with request IDs. Queued turns bypass decorative animation. Bound paint waits because WebKit can suspend animation frames under native surfaces; renderer failure must release snapshots and report recovery rather than leave an input lock or silently retry an uncertain turn.
+
+Page curl is a separate iPhone/iPad option using UIKit's native page-curl controller. Its current page contains live WebKit content; adjacent pages use the same disposable preview cache. Native completion commits the live turn, cancellation preserves position, and central interaction/selection/link regions remain available. UIKit owns its gesture delegates. Mac exposes Fade as the fallback for a stored curl preference; Reduce Motion skips decoration. Physical edge/corner feel, rapid interaction, themes and accessibility require acceptance independently of builds and bridge tests.
+
 ## Native UI and concurrency
 
 Share models and reader commands while tailoring presentation to touch, keyboard, pointer, available space, and accessibility settings. Use compact sheets and sufficiently wide side panels. Keep controls outside reading content and avoid viewport changes merely to hide chrome. Respect VoiceOver, larger interface text, contrast, and Reduce Motion.

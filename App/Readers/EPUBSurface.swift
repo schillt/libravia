@@ -4,11 +4,13 @@ import UniformTypeIdentifiers
 
 #if os(macOS)
 typealias PlatformViewRepresentable = NSViewRepresentable
+typealias EPUBViewRepresentable = NSViewRepresentable
 #else
 typealias PlatformViewRepresentable = UIViewRepresentable
+typealias EPUBViewRepresentable = UIViewControllerRepresentable
 #endif
 
-struct EPUBSurface: PlatformViewRepresentable {
+struct EPUBSurface: EPUBViewRepresentable {
     let prepared: PreparedBook
     let controller: ReaderController
     let preferences: ReaderPreferences
@@ -43,17 +45,18 @@ struct EPUBSurface: PlatformViewRepresentable {
     func updateNSView(_ web: WKWebView, context: Context) { context.coordinator.preferences(preferences) }
     static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) { web.configuration.userContentController.removeScriptMessageHandler(forName: "reader"); coordinator.controller.command = nil }
     #else
-    func makeUIView(context: Context) -> UIView {
-        let container = UIView(frame: .zero)
+    func makeUIViewController(context: Context) -> ReaderHostController {
         let web = makeWebView(context.coordinator)
-        web.frame = container.bounds
-        web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        container.addSubview(web)
-        context.coordinator.host = container
-        return container
+        let host = ReaderHostController(web: web, coordinator: context.coordinator)
+        host.loadViewIfNeeded()
+        context.coordinator.host = host.view; context.coordinator.hostController = host
+        return host
     }
-    func updateUIView(_ view: UIView, context: Context) { context.coordinator.preferences(preferences) }
-    static func dismantleUIView(_ view: UIView, coordinator: Coordinator) { coordinator.web?.configuration.userContentController.removeScriptMessageHandler(forName: "reader"); coordinator.controller.command = nil; coordinator.stopSnapshots() }
+    func updateUIViewController(_ view: ReaderHostController, context: Context) { context.coordinator.preferences(preferences) }
+    static func dismantleUIViewController(_ view: ReaderHostController, coordinator: Coordinator) {
+        coordinator.web?.configuration.userContentController.removeScriptMessageHandler(forName: "reader")
+        coordinator.controller.command = nil; coordinator.stopSnapshots()
+    }
     #endif
     @MainActor final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let prepared: PreparedBook
@@ -63,6 +66,44 @@ struct EPUBSurface: PlatformViewRepresentable {
         var loaded = false
         #if os(iOS)
         weak var host: UIView?
+        weak var hostController: ReaderHostController?
+        var curlTurning = false
+        private var curlToken: UUID?
+        private var curlCompletion: (() -> Void)?
+        private var curlBlockedRegions: [CGRect] = []
+        private var textSelectionActive = false
+        func viewportDidChange() {
+            abortInteractive(); resetCurl(); invalidateSnapshots(); cachedPage = nil; cacheRequest = UUID()
+        }
+        func cachedAdjacentPage(_ direction: String) -> UIImage? {
+            guard cachedPageCFI == controller.position.cfi, cachedPageSize == web?.bounds.size,
+                  cachedPagePreferences == latestPreferences else { return nil }
+            return adjacentPages[direction]
+        }
+        func canCurl(at point: CGPoint) -> Bool {
+            guard controller.ready, !curlTurning, turnToken == nil, pendingCard == nil, !textSelectionActive, let web,
+                  !curlBlockedRegions.contains(where: { $0.contains(point) }) else { return false }
+            let edge = min(72, web.bounds.width * 0.2)
+            if point.x < edge { return cachedAdjacentPage("previous") != nil }
+            if point.x > web.bounds.width - edge { return cachedAdjacentPage("next") != nil }
+            return false
+        }
+        func resumeQueuedTurns() { drainTurns() }
+        private func resetCurl() {
+            curlCompletion = nil; curlToken = nil; curlTurning = false
+            hostController?.resetCurlSurface()
+        }
+        private func recoverTurn(_ token: UUID) {
+            guard turnToken == token || pendingCard?.turnID == token || curlToken == token else { return }
+            abortInteractive(); resetCurl()
+            outgoingPage?.removeFromSuperview(); outgoingPage = nil; turnToken = nil
+            invalidateSnapshots(); cachedPage = nil
+            controller.error = "The page turn could not finish. Close this book and reopen it to continue."
+        }
+        func commitCurl(_ direction: String, completion: @escaping () -> Void) {
+            let token = UUID(); curlToken = token; curlCompletion = completion
+            sendNativeTurn(direction, token: token)
+        }
         weak var pagePan: UIPanGestureRecognizer?
         private var panStart: CGPoint?
         private var turnToken: UUID?
@@ -107,16 +148,23 @@ struct EPUBSurface: PlatformViewRepresentable {
             adjacentPages.removeAll(); unavailablePages.removeAll()
         }
         private func warmAdjacentPages() {
-            guard controller.ready, !latestPreferences.scrolling, let web, let host,
-                  let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
+            guard controller.ready, !latestPreferences.scrolling,
+                  ["slide", "curl"].contains(latestPreferences.pageTransition), !UIAccessibility.isReduceMotionEnabled,
+                  let web, let host, let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
             let key = cfi + "|" + String(describing: web.bounds.size) + "|" + String(describing: latestPreferences)
             guard key != snapshotKey else { return }
             invalidateSnapshots(); snapshotKey = key
             let request = UUID().uuidString; snapshotRequest = request
             web.evaluateJavaScript("window.readerSnapshotOrigin()") { [weak self] result, _ in
                 guard let self, self.snapshotRequest == request else { return }
-                guard let origin = result as? [String: Any], origin["cfi"] as? String == self.controller.position.cfi else {
+                guard let origin = result as? [String: Any], origin["cfi"] as? String == self.controller.position.cfi,
+                      let size = origin["size"] as? [String:Double],
+                      abs((size["width"] ?? 0) - web.bounds.width) < 1,
+                      abs((size["height"] ?? 0) - web.bounds.height) < 1 else {
                     self.invalidateSnapshots(); return
+                }
+                self.curlBlockedRegions = (origin["regions"] as? [[String:Double]] ?? []).map {
+                    CGRect(x:$0["x"] ?? 0,y:$0["y"] ?? 0,width:$0["width"] ?? 0,height:$0["height"] ?? 0)
                 }
                 self.snapshotOrigin = origin; self.snapshotDirections = ["next", "previous"]
                 if self.snapshotWeb == nil {
@@ -160,6 +208,7 @@ struct EPUBSurface: PlatformViewRepresentable {
                 if let image { self.adjacentPages[direction] = image }
                 self.snapshotDirections.removeFirst()
                 if let swipe = self.interactiveSwipe { swipe.readyTranslation = swipe.translation; self.updateInteractive(swipe) }
+                self.hostController?.refreshNeighbours()
                 self.captureAdjacentPage()
             }
         }
@@ -167,6 +216,7 @@ struct EPUBSurface: PlatformViewRepresentable {
             abortInteractive(); invalidateSnapshots()
             snapshotWeb?.configuration.userContentController.removeScriptMessageHandler(forName: "reader")
             snapshotWeb?.removeFromSuperview(); snapshotWeb = nil
+            curlCompletion = nil; curlToken = nil; curlTurning = false
         }
         private var cachedPage: UIImage?
         private var cachedPageSize: CGSize = .zero
@@ -204,9 +254,7 @@ struct EPUBSurface: PlatformViewRepresentable {
             switch gesture.state {
             case .began:
                 finishSettlingForInput()
-                if turnToken != nil || pendingCard != nil {
-                    if turnToken != nil || pendingCard != nil { panStart = gesture.location(in: web); return }
-                }
+                if turnToken != nil || pendingCard != nil { panStart = gesture.location(in: web); return }
                 guard interactiveSwipe == nil else { return }
                 let swipe = InteractiveSwipe(start: gesture.location(in: web))
                 swipe.translation = gesture.translation(in: web).x
@@ -315,11 +363,7 @@ struct EPUBSurface: PlatformViewRepresentable {
                 animator.startAnimation()
             } else { swipe.animationDone = true }
             sendNativeTurn(direction, token: swipe.turnID)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self, weak swipe] in
-                guard let self, let swipe, self.pendingCard === swipe else { return }
-                // Rendering failure cannot leave a snapshot blocking the book.
-                swipe.mainReady = true; self.finishSettlingForInput(); self.finishCardIfReady()
-            }
+
         }
         private func finishCardIfReady() {
             guard let swipe = pendingCard, swipe.mainReady, swipe.animationDone else { return }
@@ -340,7 +384,7 @@ struct EPUBSurface: PlatformViewRepresentable {
             queuedTurns.append(direction); drainTurns()
         }
         private func drainTurns() {
-            guard turnToken == nil, pendingCard == nil, interactiveSwipe == nil, !queuedTurns.isEmpty else { return }
+            guard turnToken == nil, pendingCard == nil, !curlTurning, interactiveSwipe == nil, !queuedTurns.isEmpty else { return }
             let direction = queuedTurns.removeFirst()
             // The renderer serializes actual changes. Rapid input skips the
             // decorative settling animation rather than dropping page turns.
@@ -365,7 +409,7 @@ struct EPUBSurface: PlatformViewRepresentable {
         }
         private func cacheCurrentPage() {
             guard controller.ready, !latestPreferences.scrolling, interactiveSwipe == nil,
-                  !interactiveFinishing, turnToken == nil,
+                  !interactiveFinishing, !curlTurning, turnToken == nil,
                   let web, let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
             let request = UUID(); cacheRequest = request
             let size = web.bounds.size, preferences = latestPreferences
@@ -373,7 +417,7 @@ struct EPUBSurface: PlatformViewRepresentable {
             configuration.afterScreenUpdates = true
             web.takeSnapshot(with: configuration) { [weak self] image, _ in
                 guard let self, self.cacheRequest == request, self.interactiveSwipe == nil,
-                      self.turnToken == nil, !self.interactiveFinishing,
+                      self.turnToken == nil, !self.interactiveFinishing, !self.curlTurning,
                       self.controller.position.cfi == cfi, self.latestPreferences == preferences,
                       self.web?.bounds.size == size else { return }
                 self.cachedPage = image
@@ -388,9 +432,10 @@ struct EPUBSurface: PlatformViewRepresentable {
             guard preferences != latestPreferences else { return }
             latestPreferences = preferences
             #if os(iOS)
-            abortInteractive(); invalidateSnapshots()
+            abortInteractive(); resetCurl(); invalidateSnapshots()
             cachedPage = nil; cacheRequest = UUID()
             web?.scrollView.isScrollEnabled = preferences.scrolling
+            hostController?.configureCurl()
             #endif
             if loaded { send("preferences", preferencesObject()) }
         }
@@ -405,7 +450,7 @@ struct EPUBSurface: PlatformViewRepresentable {
         func send(_ command: String, _ value: Any?) {
             #if os(iOS)
             if command == "next" || command == "previous" {
-                if turnToken != nil || pendingCard != nil { queueTurn(command) } else { turnPage(command) }
+                if turnToken != nil || pendingCard != nil || curlTurning { queueTurn(command) } else { turnPage(command) }
                 return
             }
             #endif
@@ -418,10 +463,15 @@ struct EPUBSurface: PlatformViewRepresentable {
         #if os(iOS)
         private func sendNativeTurn(_ direction: String, token: UUID) {
             sendRaw("nativeTurn", ["direction":direction,"request":token.uuidString])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in self?.recoverTurn(token) }
         }
         private func turnPage(_ direction: String) {
             finishSettlingForInput()
             guard turnToken == nil, interactiveSwipe == nil, !interactiveFinishing, !latestPreferences.scrolling, let web else { return }
+            if latestPreferences.pageTransition == "curl", !UIAccessibility.isReduceMotionEnabled {
+                if hostController?.animateCurl(direction) == true { return }
+                let token = UUID(); turnToken = token; sendNativeTurn(direction, token: token); return
+            }
             guard latestPreferences.pageTransition != "instant", !UIAccessibility.isReduceMotionEnabled else {
                 sendRaw(direction, nil); return
             }
@@ -439,10 +489,7 @@ struct EPUBSurface: PlatformViewRepresentable {
                 }
                 self.sendNativeTurn(direction, token: token)
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                guard self?.turnToken == token else { return }
-                self?.finishTurn(direction: direction, animated: false)
-            }
+
         }
         private func finishTurn(direction: String, animated: Bool) {
             guard turnToken != nil else { return }
@@ -489,8 +536,12 @@ struct EPUBSurface: PlatformViewRepresentable {
             #if os(iOS)
             case "swipe":
                 if let direction = value["direction"] as? String, direction == "next" || direction == "previous" { send(direction, nil) }
+            case "selection": textSelectionActive = value["active"] as? Bool ?? false
             case "turned":
-                if let swipe = pendingCard, value["request"] as? String == swipe.turnID.uuidString {
+                if let token = curlToken, value["request"] as? String == token.uuidString {
+                    let completion = curlCompletion; curlCompletion = nil; curlToken = nil; curlTurning = false
+                    completion?(); invalidateSnapshots(); cacheCurrentPage(); drainTurns()
+                } else if let swipe = pendingCard, value["request"] as? String == swipe.turnID.uuidString {
                     swipe.mainReady = true; finishCardIfReady()
                 } else if value["request"] as? String == turnToken?.uuidString {
                     finishTurn(direction: value["direction"] as? String ?? "next", animated: true)
@@ -535,7 +586,7 @@ struct EPUBSurface: PlatformViewRepresentable {
             case "navigationError": controller.returnPosition = nil; controller.navigationError = true
             case "error":
                 #if os(iOS)
-                abortInteractive()
+                abortInteractive(); resetCurl()
                 finishTurn(direction: "next", animated: false)
                 #endif
                 controller.error = "This EPUB could not be rendered. It may be damaged or use unsupported content."; controller.searching = false
@@ -558,6 +609,148 @@ struct EPUBSurface: PlatformViewRepresentable {
             controller.error = "The reader ran out of resources. Close this book and reopen it." }
     }
 }
+#if os(iOS)
+/// Keep the live WebKit page in the native curl's current controller, so center
+/// interaction, selection and accessibility stay live rather than screenshot-only.
+@MainActor final class ReaderCurlPage: UIViewController {
+    var offset: Int
+    init(offset: Int, image: UIImage?, color: UIColor) {
+        self.offset = offset; super.init(nibName: nil, bundle: nil)
+        view.backgroundColor = color
+        if let image {
+            let picture = UIImageView(image: image); picture.frame = view.bounds
+            picture.autoresizingMask = [.flexibleWidth, .flexibleHeight]; picture.contentMode = .scaleToFill
+            picture.isUserInteractionEnabled = false; picture.accessibilityElementsHidden = true
+            view.addSubview(picture)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func attach(_ web: WKWebView) {
+        view.subviews.forEach { $0.removeFromSuperview() }
+        web.frame = view.bounds; web.autoresizingMask = [.flexibleWidth, .flexibleHeight]; view.addSubview(web)
+    }
+}
+@MainActor final class ReaderCurlGate: UIView {
+    weak var owner: ReaderHostController?
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if event?.type == .touches, event?.allTouches?.contains(where: { $0.phase == .began }) == true {
+            owner?.gateCurlGestures(at: point)
+        }
+        return super.hitTest(point, with: event)
+    }
+}
+@MainActor final class ReaderHostController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+    let web: WKWebView
+    weak var coordinator: EPUBSurface.Coordinator?
+    private var curl: UIPageViewController?
+    private var currentPage: ReaderCurlPage?
+    private var lastSize = CGSize.zero
+    init(web: WKWebView, coordinator: EPUBSurface.Coordinator) {
+        self.web = web; self.coordinator = coordinator; super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func loadView() {
+        let host = ReaderCurlGate(); host.owner = self; view = host
+        web.frame = host.bounds; web.autoresizingMask = [.flexibleWidth, .flexibleHeight]; host.addSubview(web)
+    }
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard view.bounds.size != lastSize, view.bounds.width > 0 else { return }
+        lastSize = view.bounds.size; coordinator?.viewportDidChange()
+    }
+    var paperColor: UIColor {
+        switch coordinator?.latestPreferences.theme {
+        case "dark": return UIColor(white: 23 / 255, alpha: 1)
+        case "sepia": return UIColor(red: 244 / 255, green: 236 / 255, blue: 216 / 255, alpha: 1)
+        default: return .white
+        }
+    }
+    func configureCurl() {
+        curl?.view.backgroundColor = paperColor; currentPage?.view.backgroundColor = paperColor
+        let enabled = coordinator?.latestPreferences.pageTransition == "curl" && coordinator?.latestPreferences.scrolling == false && !UIAccessibility.isReduceMotionEnabled
+        if enabled, curl == nil {
+            let page = ReaderCurlPage(offset: 0, image: nil, color: paperColor); page.attach(web)
+            let controller = UIPageViewController(transitionStyle: .pageCurl, navigationOrientation: .horizontal,
+                                                  options: [.spineLocation:UIPageViewController.SpineLocation.min.rawValue])
+            controller.view.backgroundColor = paperColor; controller.isDoubleSided = false
+            controller.dataSource = self; controller.delegate = self
+            addChild(controller); controller.view.frame = view.bounds
+            controller.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            view.addSubview(controller.view); controller.didMove(toParent: self)
+            controller.setViewControllers([page], direction: .forward, animated: false)
+            currentPage = page; curl = controller
+            gateCurlGestures(at: CGPoint(x: view.bounds.midX, y: view.bounds.midY))
+        } else if !enabled, let curl {
+            curl.willMove(toParent: nil)
+            web.removeFromSuperview(); web.frame = view.bounds; view.addSubview(web)
+            curl.view.removeFromSuperview(); curl.removeFromParent(); self.curl = nil; currentPage = nil
+        }
+    }
+    func resetCurlSurface() {
+        guard let old = curl else { return }
+        old.delegate = nil; old.dataSource = nil; old.willMove(toParent: nil)
+        web.removeFromSuperview(); web.frame = view.bounds; view.addSubview(web)
+        old.view.removeFromSuperview(); old.removeFromParent(); curl = nil; currentPage = nil
+        configureCurl()
+    }
+    func restoreLivePage() {
+        guard let curl else { return }
+        curl.delegate = nil
+        let page = ReaderCurlPage(offset: 0, image: nil, color: paperColor); page.attach(web)
+        curl.setViewControllers([page], direction: .forward, animated: false)
+        currentPage = page; curl.delegate = self
+    }
+    func refreshNeighbours() {
+        guard coordinator?.curlTurning == false, let curl, let currentPage else { return }
+        curl.dataSource = nil; curl.dataSource = self
+        curl.setViewControllers([currentPage], direction: .forward, animated: false)
+    }
+    func gateCurlGestures(at point: CGPoint) {
+        let allowed = coordinator?.canCurl(at: point) == true
+        // UIKit retains its own gesture delegates. Only documented recognizer
+        // enablement is changed; native taps defer to LibraVia's tap zones.
+        for gesture in curl?.gestureRecognizers ?? [] { gesture.isEnabled = allowed && !(gesture is UITapGestureRecognizer) }
+    }
+    private func neighbour(_ offset: Int) -> ReaderCurlPage? {
+        guard abs(offset) == 1, let image = coordinator?.cachedAdjacentPage(offset > 0 ? "next" : "previous") else { return nil }
+        return ReaderCurlPage(offset: offset, image: image, color: paperColor)
+    }
+    func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
+        guard let page = viewController as? ReaderCurlPage else { return nil }; return neighbour(page.offset - 1)
+    }
+    func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
+        guard let page = viewController as? ReaderCurlPage else { return nil }; return neighbour(page.offset + 1)
+    }
+    func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) {
+        coordinator?.curlTurning = true
+    }
+    func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool,
+                            previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
+        guard pageViewController === curl else { return }
+        guard completed, let page = pageViewController.viewControllers?.first as? ReaderCurlPage, page.offset != 0 else {
+            coordinator?.curlTurning = false; coordinator?.resumeQueuedTurns(); return
+        }
+        commit(page)
+    }
+    private func commit(_ page: ReaderCurlPage) {
+        coordinator?.commitCurl(page.offset > 0 ? "next" : "previous") { [weak self, weak page] in
+            guard let self, let page else { return }
+            page.offset = 0; page.attach(self.web); self.currentPage = page; self.refreshNeighbours()
+        }
+    }
+    func animateCurl(_ direction: String) -> Bool {
+        guard let curl, coordinator?.curlTurning == false, let next = neighbour(direction == "next" ? 1 : -1) else { return false }
+        coordinator?.curlTurning = true
+        curl.setViewControllers([next], direction: direction == "next" ? .forward : .reverse, animated: true) { [weak self, weak next] completed in
+            guard let self, let next, self.curl === curl, self.coordinator?.curlTurning == true else { return }
+            if completed { self.commit(next) }
+            else { self.restoreLivePage(); self.coordinator?.curlTurning = false; self.coordinator?.resumeQueuedTurns() }
+        }
+        return true
+    }
+}
+#endif
+
 final class BookScheme: NSObject, WKURLSchemeHandler {
     let directory: URL
     init(directory: URL) { self.directory = directory }
@@ -585,6 +778,7 @@ extension EPUBSurface.Coordinator: UIGestureRecognizerDelegate {
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === pagePan, let pan = gestureRecognizer as? UIPanGestureRecognizer, let web else { return true }
         guard controller.ready, !latestPreferences.scrolling, interactiveSwipe == nil else { return false }
+        if latestPreferences.pageTransition == "curl", !UIAccessibility.isReduceMotionEnabled { return false }
         let movement = pan.translation(in: web)
         return abs(movement.x) > abs(movement.y) * 1.5
     }
