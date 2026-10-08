@@ -102,7 +102,11 @@ struct CatalogView: View {
     private var requestKey: String { "\(model.sessionID)|\(model.catalogRevision)|\(request)|\(resume)|\(revision)" }
     private var suggestionKey: String { "\(model.sessionID)|\(model.catalogRevision)|\(suggestionRevision)" }
     private var homeDiscoveryKey: String { "\(model.sessionID)|\(model.catalogRevision)|\(model.selectedLibrary ?? "")|\(suggestionRevision)" }
-    private let homeColumns = [GridItem(.flexible(), spacing: 14, alignment: .top), GridItem(.flexible(), spacing: 14, alignment: .top)]
+    @ScaledMetric(relativeTo: .body) private var minimumCardWidth = 140.0
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private var homeColumns: [GridItem] {
+        [GridItem(dynamicTypeSize.isAccessibilitySize ? .flexible() : .adaptive(minimum: minimumCardWidth, maximum: minimumCardWidth * 1.5), spacing: 14, alignment: .top)]
+    }
     private var homeCollectionScope: CatalogScope {
         CatalogPresentation.scope(libraries: model.libraries, selectedID: model.selectedLibrary ?? model.libraries.first?.id, folderID: nil, search: false)
     }
@@ -143,7 +147,7 @@ struct CatalogView: View {
                         }
                     }
                 } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 90, maximum: 120), spacing: 20, alignment: .top)], alignment: .leading, spacing: 24) {
+                    LazyVGrid(columns: homeColumns, alignment: .leading, spacing: 24) {
                         ForEach(books) { book in
                             NavigationLink { if book.isFolder { CatalogView(parent: Library(id: book.id, name: book.title)) } else { BookDetailView(book: book) } } label: { BookCard(book: book) }.buttonStyle(.plain).modifier(BookActions(book: book))
                         }
@@ -617,32 +621,29 @@ struct BookDetailView: View {
     @State private var confirmingRemoval = false
     @State private var overview = ""
     private var displayed: Book { model.displayedBook(detail ?? book) }
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var detailCoverWidth = 170.0
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                CoverView(book: displayed, fullSize: true).modifier(ReaderCoverSource(book: displayed)).frame(width: 170).frame(maxWidth: .infinity)
-                Text(displayed.title).font(.title2.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                if !displayed.authors.isEmpty {
-                    ForEach(displayed.authors, id: \.name) { author in
-                        HStack(spacing: 10) {
-                            ZStack {
-                                Circle().fill(.quaternary)
-                                if let data = authorImages[author.name], let image = platformImage(data) { image.resizable().scaledToFill() }
-                                else { Image(systemName: "person.fill").foregroundStyle(.secondary) }
-                            }.frame(width: 38, height: 38).clipShape(Circle()).accessibilityHidden(true)
-                            Text(author.name).font(.subheadline).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 28) {
+                if dynamicTypeSize.isAccessibilitySize {
+                    compactHeader
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 28) {
+                            detailCover
+                            detailMetadata.frame(minWidth: 280, maxWidth: .infinity, alignment: .leading)
                         }
+                        compactHeader
                     }
-                } else if !displayed.author.isEmpty { Text(displayed.author).font(.subheadline).foregroundStyle(.secondary) }
-                Text(displayed.format == .unsupported ? "Unsupported format" : displayed.format.rawValue.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                DeviceBookIndicator(book: book).font(.caption)
-                if model.openingID == book.id {
-                    ProgressView(value: model.downloadProgress).accessibilityLabel("Preparing book")
-                    Text(model.downloadProgress == nil ? "Checking reading position…" : "Preparing your book…").foregroundStyle(.secondary)
-                    Button("Cancel") { model.cancelOpen() }
-                } else { Button { model.open(displayed) } label: { Label("Read", systemImage: "book").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).disabled(book.format == .unsupported) }
-                if !overview.isEmpty { Text(overview).font(.body).textSelection(.enabled) }
-            }.padding(24).frame(maxWidth: 700).frame(maxWidth: .infinity)
+                }
+                if !overview.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("About this book").font(.headline).accessibilityAddTraits(.isHeader)
+                        Text(overview).font(.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }.padding(24).frame(maxWidth: 800).frame(maxWidth: .infinity)
         }
         .task(id: displayed.summary) { overview = BookOverview.plainText(displayed.summary) }
         .navigationTitle("Book Details")
@@ -678,6 +679,40 @@ struct BookDetailView: View {
             for author in fetched.authors where authorImages[author.name] == nil {
                 if let image = await model.authorImage(author), !Task.isCancelled { authorImages[author.name] = image }
             }
+        }
+    }
+    private var detailCover: some View {
+        CoverView(book: displayed, fullSize: true).modifier(ReaderCoverSource(book: displayed))
+            .frame(width: min(detailCoverWidth, 220))
+    }
+    private var compactHeader: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            detailCover.frame(maxWidth: .infinity)
+            detailMetadata
+        }
+    }
+    private var detailMetadata: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(displayed.title).font(.title2.weight(.semibold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).accessibilityAddTraits(.isHeader)
+            if !displayed.authors.isEmpty {
+                ForEach(displayed.authors, id: \.name) { author in
+                    HStack(spacing: 10) {
+                        ZStack {
+                            Circle().fill(.quaternary)
+                            if let data = authorImages[author.name], let image = platformImage(data) { image.resizable().scaledToFill() }
+                            else { Image(systemName: "person.fill").foregroundStyle(.secondary) }
+                        }.frame(width: 38, height: 38).clipShape(Circle()).accessibilityHidden(true)
+                        Text(author.name).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+            } else if !displayed.author.isEmpty { Text(displayed.author).font(.subheadline).foregroundStyle(.secondary) }
+            Text(displayed.format == .unsupported ? "Unsupported format" : displayed.format.rawValue.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            DeviceBookIndicator(book: book).font(.caption)
+            if model.openingID == book.id {
+                ProgressView(value: model.downloadProgress).accessibilityLabel("Preparing book")
+                Text(model.downloadProgress == nil ? "Checking reading position…" : "Preparing your book…").foregroundStyle(.secondary)
+                Button("Cancel") { model.cancelOpen() }
+            } else { Button { model.open(displayed) } label: { Label("Read", systemImage: "book").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).disabled(book.format == .unsupported) }
         }
     }
 }
