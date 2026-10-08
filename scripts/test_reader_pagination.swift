@@ -66,7 +66,15 @@ import WebKit
                     const anchor=current;
                     await requestPagination();
                     assert(current===anchor,'Counting cannot move the live reader');
-                    return 'Actual consecutive pages, chapter crossing, exact scrub targets and font-size recount passed';
+                    navigationTitles.set(1,'Chapter 7');
+                    probePreferences.scrolling=true;
+                    await queueLayout(probePreferences);
+                    await rendition.display('two.xhtml');await pause(300);
+                    const chapterView=rendition.manager.views.find(book.spine.get('two.xhtml'));
+                    assert(chapterView.element.querySelector('.reader-chapter-break')?.textContent==='Chapter 7','Visible chapter boundary uses the navigation title');
+                    assert(navigationTitles.get(rendition.location.start.index)==='Chapter 7','Current chapter follows content rather than its ordinal');
+                    assert(layoutPages.length===0,'Scrolling cannot retain an obsolete page map');
+                    return 'Consecutive pages, exact scrub, type/viewport recount, position preservation and chapter boundaries passed';
                     """, arguments: [:], in: nil, contentWorld: .page)
                     finish(true, result as? String ?? "Renderer checks passed")
                 } catch {

@@ -54,7 +54,7 @@ function requestPagination() {
     let counterBook, counter, host;
     try {
       counterBook = ePub(publicationURL, {openAs:'opf'});
-      await counterBook.ready;
+      await withPaginationTimeout(counterBook.ready);
       if (generation !== paginationGeneration) return;
       counterBook.spine.hooks.content.register(sanitizePublication);
       host = document.createElement('div');
@@ -63,6 +63,8 @@ function requestPagination() {
       document.body.appendChild(host);
       counter = new ePub.Rendition(counterBook, {...size,manager:'default',flow:'paginated',resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false});
       counter.attachTo(host);
+      await withPaginationTimeout(counter.started);
+      counter.manager.viewSettings.forceEvenPages = rendition.manager.viewSettings.forceEvenPages;
       setReaderTheme(counter, p);
       const pages = [];
       for (const section of counterBook.spine.spineItems.filter(section => section.linear)) {
