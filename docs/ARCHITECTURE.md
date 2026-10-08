@@ -38,6 +38,14 @@ Persist reading changes locally first, then queue supported writes. Each adapter
 
 Persist retry/acknowledgement state. Preserve conflicting note edits for resolution. Deletion records must prevent resurrection after delayed retries or another device reconnects. Authentication failure, unavailable items, disconnected servers, and unsupported operations have distinct states and actionable recovery. Imported books remain local in 1.0.
 
+## Reader location contract
+
+EPUB page numbers describe visible screens/spreads in the current viewport and typography, rather than printed-edition pages or rounded character percentages. Count a separate sanitized rendition, match the live layout, cancel obsolete counts, and publish only a complete current map. Wide paginated chapters start on complete spreads. Recount after viewport or typography changes; show counting/unavailable status until a valid map exists. Continuous scrolling reports percentage progress.
+
+Persist exact EPUB CFIs and the existing provider-compatible progress fraction independently of the disposable page map. A page recount must never reset reading data or navigate the live reader. Scrubber destinations use chapter plus spread offsets after destination layout settles. Chapter labels come from publication navigation, not spine ordinals. Chapter decorations stay outside publication frames to preserve CFI node paths.
+
+Verify compact and two-column pagination, exact scrubbing, reflow and isolated counting with native WebKit fixtures. Fixed-layout and vertical-writing count support, unusual publications, asset timing and large-book counting performance need explicit acceptance; never substitute character estimates for exact page numbers.
+
 ## Native UI and concurrency
 
 Share models and reader commands while tailoring presentation to touch, keyboard, pointer, available space, and accessibility settings. Use compact sheets and sufficiently wide side panels. Keep controls outside reading content and avoid viewport changes merely to hide chrome. Respect VoiceOver, larger interface text, contrast, and Reduce Motion.
