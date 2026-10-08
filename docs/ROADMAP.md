@@ -26,7 +26,7 @@ Libraries remain separate by source. **On My Device** is a separate local librar
 | 0.9 | Release candidate beta | Freeze feature scope; exercise provider/format/platform compatibility; triage beta defects. | Complete daily-use journeys and no unresolved release-blocking defects. |
 | 1.0 | Trusted release | Freeze the exact candidate; validate distribution artifacts, privacy, licenses, documentation, and support. | Every product promise has acceptance evidence; no known reading-data-loss defect or broken core journey remains. |
 
-Small patches can ship within milestones. Version numbers indicate accepted outcomes, not merely merged feature lists. Each milestone has separate implementation issues and an acceptance gate issue in GitHub.
+Small patches can ship within milestones. UI and interaction improvements are ongoing release work, including releases without a dedicated design milestone. Track specific feedback as issues and validate accessibility, platform behavior, and reading-location stability alongside each change. Version numbers indicate accepted outcomes, not merely merged feature lists. Each milestone has separate implementation issues and an acceptance gate issue in GitHub.
 
 ## Native reading standards
 

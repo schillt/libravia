@@ -62,6 +62,8 @@ struct ReaderView: View {
     @State private var navigationTab = 0
     @State private var bookmarkFeedback = ""
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var search = ""
     @State private var pageNumber = 1
     @State private var scrubFraction = 0.0
@@ -74,6 +76,15 @@ struct ReaderView: View {
         @Bindable var model = model
         NavigationStack {
             readerSurface
+                .mask {
+                    if prepared.book.format == .epub && model.preferences.scrolling && !reduceTransparency && contrast != .increased {
+                        VStack(spacing: 0) {
+                            LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom).frame(height: 12)
+                            Rectangle().fill(.white)
+                            LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .bottom).frame(height: 12)
+                        }
+                    } else { Rectangle().fill(.white) }
+                }
                 .padding(.top, 40)
                 .padding(.bottom, 20)
                 .background(readerBackground.ignoresSafeArea())
