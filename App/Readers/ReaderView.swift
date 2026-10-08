@@ -40,11 +40,7 @@ struct ReaderChapter: Identifiable {
     var searching = false
     var searchState: ReaderSearchState = .idle
     var searchID = UUID().uuidString
-    #if os(iOS)
     var controlsVisible = false
-    #else
-    var controlsVisible = true
-    #endif
     var returnPosition: ReadingPosition?
     var navigationError = false
     func cancelSearch() { searchID = UUID().uuidString; command?("cancelSearch", nil); searching = false; if searchState == .searching { searchState = .idle } }
@@ -92,12 +88,22 @@ struct ReaderView: View {
     @State private var scrubFraction = 0.0
     @State private var controlsActivity = UUID()
     @State private var scrubbing = false
-    @State private var showBookTitle = false
+    @AppStorage("readerKeepTitleVisible") private var keepTitleVisible = false
+    @AppStorage("readerKeepProgressVisible") private var keepProgressVisible = false
+    @ScaledMetric(relativeTo: .caption) private var headerLineHeight = 18.0
+    @ScaledMetric(relativeTo: .caption2) private var progressLineHeight = 16.0
+    private var headerGutter: Double { max(52, headerLineHeight * 2 + 8) }
+    private var footerGutter: Double { 60 + progressLineHeight }
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var wideContents = false
     @State private var requestedChapterSnippets: Set<Int> = []
     init(prepared: PreparedBook, onContentReady: @escaping (Bool) -> Void = { _ in }) { self.prepared = prepared; self.onContentReady = onContentReady; _controller = State(initialValue: ReaderController(position: prepared.position)) }
     var body: some View {
         @Bindable var model = model
-        NavigationStack {
+        GeometryReader { geometry in
+          let usesSidebar = geometry.size.width >= 900 && !dynamicTypeSize.isAccessibilitySize
+          HStack(spacing: 0) {
+          NavigationStack {
             readerSurface
                 .mask {
                     if prepared.book.format == .epub && model.preferences.scrolling && !reduceTransparency && contrast != .increased {
@@ -108,8 +114,10 @@ struct ReaderView: View {
                         }
                     } else { Rectangle().fill(.white) }
                 }
-                .padding(.top, 40)
-                .padding(.bottom, 20)
+                // Keep the document viewport identical when chrome appears or hides.
+                // Side panels and text-size changes deliberately reflow; visibility does not.
+                .padding(.top, headerGutter)
+                .padding(.bottom, footerGutter)
                 .background(readerBackground.ignoresSafeArea())
                 .overlay {
                     if searchVisible {
@@ -130,11 +138,11 @@ struct ReaderView: View {
                                 .accessibilityLabel("Back to library").buttonStyle(.plain).glassEffect(readerGlass.interactive(), in: Circle())
                         }
                         Button {
-                            withAnimation(.easeInOut(duration: 0.25)) { showBookTitle.toggle() }
+                            controller.controlsVisible.toggle()
                             controlsActivity = UUID()
                         } label: {
                             VStack(spacing: 2) {
-                                if showBookTitle {
+                                if keepTitleVisible {
                                     Text(prepared.book.title).font(.caption2).foregroundStyle(readerForeground.opacity(0.85))
                                         .lineLimit(1).transition(.opacity)
                                 }
@@ -148,15 +156,17 @@ struct ReaderView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("\(chapterHeaderLabel), \(prepared.book.title)")
-                        .accessibilityHint("Show or hide the book title")
+                        .accessibilityHint("Show or hide reader controls")
+                        .opacity(controller.controlsVisible || voiceOver || keepTitleVisible ? 1 : 0)
+                        .allowsHitTesting(controller.controlsVisible || voiceOver || keepTitleVisible)
+                        .accessibilityHidden(!(controller.controlsVisible || voiceOver || keepTitleVisible))
                         if controller.controlsVisible || voiceOver, ReaderCapabilities(format: prepared.book.format).textSearch {
                             Button { openSearch() } label: { Image(systemName: "magnifyingglass").font(.system(size: 18, weight: .medium)).frame(width: 44, height: 44) }
                                 .accessibilityLabel("Search book").buttonStyle(.plain).glassEffect(readerGlass.interactive(), in: Circle())
                                 .glassEffectID("readerSearch", in: glassNamespace)
-                                .keyboardShortcut("f", modifiers: .command)
                         }
                         }
-                    }}.foregroundStyle(readerForeground).padding(.horizontal, 16).frame(height: 44).padding(.top, 2)
+                    }}.foregroundStyle(readerForeground).padding(.horizontal, 16).frame(height: headerGutter)
                     }
                 }
                 .overlay(alignment: .bottom) {
@@ -164,25 +174,25 @@ struct ReaderView: View {
                     // Removing it would dismiss an open system menu on the hide timer.
                     ZStack(alignment: .bottom) {
                         if !searchVisible && (controller.controlsVisible || voiceOver) {
-                            bottomChromeFade.frame(height: 192).ignoresSafeArea(edges: .bottom)
+                            bottomChromeFade.frame(height: footerGutter).ignoresSafeArea(edges: .bottom)
                         }
                         readerControls.frame(maxWidth: 540).padding(.horizontal, 16).padding(.bottom, 2)
                             .opacity(!searchVisible && (controller.controlsVisible || voiceOver) ? 1 : 0)
                             .allowsHitTesting(!searchVisible && (controller.controlsVisible || voiceOver))
                             .accessibilityHidden(searchVisible || !(controller.controlsVisible || voiceOver))
                         restingProgress.frame(maxWidth: 320).padding(.horizontal, 40).offset(y: 16)
-                            .opacity(!searchVisible && !(controller.controlsVisible || voiceOver) ? 1 : 0)
-                            .allowsHitTesting(!searchVisible && !(controller.controlsVisible || voiceOver))
-                            .accessibilityHidden(searchVisible || controller.controlsVisible || voiceOver)
+                            .opacity(!searchVisible && keepProgressVisible && !(controller.controlsVisible || voiceOver) ? 1 : 0)
+                            .allowsHitTesting(!searchVisible && keepProgressVisible && !(controller.controlsVisible || voiceOver))
+                            .accessibilityHidden(searchVisible || !keepProgressVisible || controller.controlsVisible || voiceOver)
                     }
                 }
-            .animation(.easeInOut(duration: 0.25), value: controller.controlsVisible)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: controller.controlsVisible)
             .navigationTitle(prepared.book.title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
             #endif
-            .sheet(isPresented: Binding(get: { panel != nil }, set: { if !$0 { panel = nil } })) {
+            .sheet(isPresented: Binding(get: { panel != nil && !(usesSidebar && panel == .contents) }, set: { if !$0 { panel = nil } })) {
                 Group {
                     if let adjustment {
                         compactAdjustment(adjustment)
@@ -212,7 +222,37 @@ struct ReaderView: View {
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .height(compactPanelHeight)))
             }
+          }
+          if usesSidebar && panel == .contents {
+              Divider()
+              VStack(spacing: 0) {
+                  HStack {
+                      Text("Book navigation").font(.headline).accessibilityAddTraits(.isHeader)
+                      Spacer()
+                      Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                          .buttonStyle(.plain).accessibilityLabel("Close book navigation")
+                  }.padding(.horizontal, 16)
+                  contents
+              }
+              .frame(width: 320)
+              .background(.background)
+          }
+          }
+          .onChange(of: usesSidebar, initial: true) { _, value in wideContents = value }
         }
+        .focusedSceneValue(\.readerActions, ReaderSceneActions(
+            canTurn: controller.ready && showsPageTurnButtons && panel == nil && !searchVisible,
+            canSearch: controller.ready && ReaderCapabilities(format: prepared.book.format).textSearch,
+            canBookmark: controller.ready,
+            controls: { controller.controlsVisible.toggle() },
+            previous: { controller.command?("previous", nil) },
+            next: { controller.command?("next", nil) },
+            contents: { navigationTab = 0; panel = panel == .contents ? nil : .contents },
+            appearance: { panel = .appearance },
+            search: { openSearch() },
+            bookmark: { if let bookmark = currentBookmark { removeBookmark(bookmark) } else { addBookmark() } },
+            close: { if searchVisible { closeSearch() } else if panel != nil { panel = nil } else { dismiss() } }
+        ))
         .alert("Chapter unavailable", isPresented: Binding(get: { controller.navigationError }, set: { controller.navigationError = $0 })) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -225,7 +265,6 @@ struct ReaderView: View {
         .onChange(of: controller.error) { _, error in if error != nil { onContentReady(false) } }
         .onChange(of: controller.controlsVisible) { _, visible in
             controlsActivity = UUID()
-            if !visible { withAnimation(.easeOut(duration: 0.25)) { showBookTitle = false } }
         }
         .onChange(of: controller.bookPage) { _, _ in if !scrubbing { scrubFraction = progressFraction } }
         .onChange(of: controller.bookPageCount) { _, _ in if !scrubbing { scrubFraction = progressFraction } }
@@ -505,6 +544,11 @@ struct ReaderView: View {
     private var appearance: some View {
         @Bindable var model = model
         return Form {
+            Section("While reading") {
+                Toggle("Keep book title visible", isOn: $keepTitleVisible)
+                Toggle("Keep progress visible", isOn: $keepProgressVisible)
+                Text("Show controls with a tap or click in the center of the page.").font(.caption).foregroundStyle(.secondary)
+            }
             Section("Tap to turn pages") {
                 adjustmentButton(.edgeWidth)
                 Text("Tap the left edge for the previous page, the right edge for the next page, and the center for controls. While scrolling an EPUB or zoomed in, taps show controls.").font(.caption).foregroundStyle(.secondary)
@@ -717,12 +761,12 @@ struct ReaderView: View {
     }
     private func openSearch() {
         controller.command?("searchPresentation", true)
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = true }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = true }
     }
     private func closeSearch() {
         searchFocused = false
         controller.cancelSearch()
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = false }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = false }
         // Keep the EPUB box fixed through the keyboard dismissal animation.
         // Hardware-keyboard and Mac searches have no keyboard dismissal to await.
         if !searchKeyboardVisible { controller.command?("searchPresentation", false) }
@@ -747,21 +791,22 @@ struct ReaderView: View {
                 if bookmarks.isEmpty { Text("No bookmarks yet").foregroundStyle(.secondary) }
                 ForEach(bookmarks) { bookmark in
                     HStack {
-                        Button(bookmark.name) { controller.returnPosition = controller.position; seek(bookmark.position); panel = nil }
+                        Button(bookmark.name) { controller.returnPosition = controller.position; seek(bookmark.position); closeContentsIfCompact() }
                         Spacer()
-                        Button(role: .destructive) { removeBookmark(bookmark) } label: { Image(systemName: "trash") }.accessibilityLabel("Delete bookmark")
+                        Button(role: .destructive) { removeBookmark(bookmark) } label: { Image(systemName: "trash").frame(width: 44, height: 44) }.accessibilityLabel("Delete bookmark \(bookmark.name)")
                     }
                 }
             }
             }
             if navigationTab == 0 { Section("Table of contents") {
                 if controller.toc.isEmpty { Text("No table of contents").foregroundStyle(.secondary) }
-                ForEach(controller.toc) { item in Button { controller.returnPosition = controller.position; controller.command?("location", item.id); panel = nil } label: { HStack { Text(item.title); Spacer(); if controller.currentChapter == item.id { Image(systemName: "checkmark").accessibilityLabel("Current chapter") } } } }
+                ForEach(controller.toc) { item in Button { controller.returnPosition = controller.position; controller.command?("location", item.id); closeContentsIfCompact() } label: { HStack { Text(item.title); Spacer(); if controller.currentChapter == item.id { Image(systemName: "checkmark").accessibilityLabel("Current chapter") } } } }
             }
             }
         }.id(model.bookmarksRevision)
         }
     }
+    private func closeContentsIfCompact() { if !wideContents { panel = nil } }
     private func seek(_ position: ReadingPosition) {
         if prepared.book.format == .epub { controller.command?("seek", ["cfi": position.cfi as Any? ?? NSNull(), "fraction": position.fraction]) }
         else { controller.command?("page", position.page) }
@@ -924,4 +969,46 @@ struct ReadingConflictChoice: View {
         }.padding(32).frame(idealWidth: 440)
     }
     private func label(_ position: ReadingPosition) -> String { conflict.book.format == .epub ? "\(Int(position.fraction * 100))%" : "page \(position.page + 1)" }
+}
+
+
+struct ReaderSceneActions {
+    var canTurn: Bool
+    var canSearch: Bool
+    var canBookmark: Bool
+    var controls: @MainActor @Sendable () -> Void
+    var previous: @MainActor @Sendable () -> Void
+    var next: @MainActor @Sendable () -> Void
+    var contents: @MainActor @Sendable () -> Void
+    var appearance: @MainActor @Sendable () -> Void
+    var search: @MainActor @Sendable () -> Void
+    var bookmark: @MainActor @Sendable () -> Void
+    var close: @MainActor @Sendable () -> Void
+}
+private struct ReaderActionsKey: FocusedValueKey { typealias Value = ReaderSceneActions }
+extension FocusedValues {
+    var readerActions: ReaderSceneActions? {
+        get { self[ReaderActionsKey.self] }
+        set { self[ReaderActionsKey.self] = newValue }
+    }
+}
+struct ReaderCommands: Commands {
+    @FocusedValue(\.readerActions) private var actions
+    var body: some Commands {
+        CommandMenu("Reader") {
+          Group {
+            Button("Show or Hide Controls") { actions?.controls() }.keyboardShortcut("r", modifiers: [.command, .shift])
+            Divider()
+            Button("Previous Page") { actions?.previous() }.keyboardShortcut(.leftArrow, modifiers: .command).disabled(actions?.canTurn != true)
+            Button("Next Page") { actions?.next() }.keyboardShortcut(.rightArrow, modifiers: .command).disabled(actions?.canTurn != true)
+            Divider()
+            Button("Contents") { actions?.contents() }.keyboardShortcut("t", modifiers: [.command, .shift])
+            Button("Appearance") { actions?.appearance() }.keyboardShortcut("a", modifiers: [.command, .shift])
+            Button("Search Book") { actions?.search() }.keyboardShortcut("f", modifiers: .command).disabled(actions?.canSearch != true)
+            Button("Toggle Bookmark") { actions?.bookmark() }.keyboardShortcut("d", modifiers: .command).disabled(actions?.canBookmark != true)
+            Divider()
+            Button("Close Panel or Book") { actions?.close() }.keyboardShortcut(.escape, modifiers: [])
+          }.disabled(actions == nil)
+        }
+    }
 }

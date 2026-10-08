@@ -7,6 +7,7 @@ import SwiftUI
             RootView().environment(model)
                 .frame(minWidth: 320, minHeight: 480)
         }
+        .commands { ReaderCommands() }
         #if os(macOS)
         .defaultSize(width: 1100, height: 780)
         #endif
@@ -109,7 +110,7 @@ struct RootView: View {
             ReadingConflictChoice(conflict: conflict) { model.conflict = nil }
         }
         #if os(macOS)
-        .sheet(item: $model.readerLaunchBook, onDismiss: { model.closeReader() }) { book in BookOpeningView(book: book).environment(model).frame(minWidth: 650, minHeight: 550, idealHeight: 800) }
+        .sheet(item: $model.readerLaunchBook, onDismiss: { model.closeReader() }) { book in BookOpeningView(book: book).environment(model).frame(minWidth: 650, idealWidth: 1000, maxWidth: .infinity, minHeight: 550, idealHeight: 800, maxHeight: .infinity) }
         #else
         .fullScreenCover(item: $model.readerLaunchBook, onDismiss: { model.closeReader() }) { book in
             BookOpeningView(book: book).environment(model)
