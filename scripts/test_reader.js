@@ -174,7 +174,9 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.equal(unloaded,2,'Preloaded sections must remain loaded');
  assert.equal(messages.filter(m=>m.kind==='results').length,1);
  await context.window.readerCommand({name:'preferences',value:{theme:'light',fontSize:18}});
+ const firstPreviewTimer = [...timers.keys()][0];
  await context.window.readerCommand({name:'preferences',value:{theme:'dark',fontSize:22}});
+ assert.equal([...timers.keys()][0],firstPreviewTimer,'Sustained slider edits must not postpone live preview');
  assert.equal(timers.size,1,'Rapid appearance edits must coalesce');
  vm.runInContext('current="navigated"',context);
  await fireTimer();

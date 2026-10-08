@@ -6,6 +6,10 @@ import UIKit
 
 struct ReaderCapabilities { let textSearch: Bool; let reflow: Bool; init(format: BookFormat) { textSearch = format == .epub || format == .pdf; reflow = format == .epub } }
 enum ReaderPanel: String { case contents, appearance }
+enum ReaderAdjustment: String, CaseIterable, Identifiable {
+    case textSize = "Text size", lineSpacing = "Line spacing", margins = "Margins", edgeWidth = "Edge width"
+    var id: String { rawValue }
+}
 enum ReaderSearchState { case idle, searching, results, empty, failed }
 struct ReaderLink: Identifiable { var id: String; var title: String; var context: String? = nil }
 struct ReaderChapter: Identifiable {
@@ -68,6 +72,7 @@ struct ReaderView: View {
     private let onContentReady: (Bool) -> Void
     @State private var controller: ReaderController
     @State private var panel: ReaderPanel?
+    @State private var adjustment: ReaderAdjustment?
     @State private var searchVisible = false
     @State private var searchKeyboardVisible = false
     @FocusState private var searchFocused: Bool
@@ -162,14 +167,24 @@ struct ReaderView: View {
             .toolbar(.hidden, for: .navigationBar)
             #endif
             .sheet(isPresented: Binding(get: { panel != nil }, set: { if !$0 { panel = nil } })) {
-                NavigationStack {
-                    Group {
-                        if panel == .appearance { appearance }
-                        else { contents }
-                    }.navigationTitle(panel == .appearance ? "Appearance" : "Contents")
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { panel = nil } } }
-                }.frame(minWidth: 320, idealWidth: 420, minHeight: 380)
-                .presentationDetents([.medium, .large])
+                Group {
+                    if let adjustment { compactAdjustment(adjustment) }
+                    else {
+                        NavigationStack {
+                            Group {
+                                if panel == .appearance { appearance }
+                                else { contents }
+                            }.navigationTitle(panel == .appearance ? "Appearance" : "Contents")
+                            #if os(macOS)
+                            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Close") { panel = nil } } }
+                            #endif
+                        }
+                    }
+                }
+                .frame(minWidth: 320, idealWidth: 420, minHeight: adjustment == nil ? 380 : 140)
+                .presentationDetents(adjustment == nil ? [.medium, .large] : [.height(150)])
+                .presentationDragIndicator(.visible)
+                .presentationBackgroundInteraction(.enabled(upThrough: .height(150)))
             }
         }
         .alert("Chapter unavailable", isPresented: Binding(get: { controller.navigationError }, set: { controller.navigationError = $0 })) {
@@ -201,7 +216,7 @@ struct ReaderView: View {
             controller.controlsVisible = false
             #endif
         }
-        .onChange(of: panel) { _, _ in controlsActivity = UUID(); pageNumber = controller.position.page + 1 }
+        .onChange(of: panel) { _, value in if value == nil { adjustment = nil }; controlsActivity = UUID(); pageNumber = controller.position.page + 1 }
         .onDisappear { controller.cancelSearch(); controller.changed = nil; Task { await model.flushProgress() } }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
@@ -428,6 +443,16 @@ struct ReaderView: View {
             case .cbz: ComicSurface(prepared: prepared, controller: controller)
             case .unsupported: ContentUnavailableView("Unsupported book", systemImage: "book.closed")
             }
+            if adjustment == .edgeWidth {
+                GeometryReader { geometry in
+                    HStack(spacing: 0) {
+                        Rectangle().fill(.tint.opacity(0.12)).frame(width: geometry.size.width * model.preferences.pageTapZoneFraction)
+                        Spacer(minLength: 0)
+                        Rectangle().fill(.tint.opacity(0.12)).frame(width: geometry.size.width * model.preferences.pageTapZoneFraction)
+                    }
+                }
+                .allowsHitTesting(false).accessibilityHidden(true)
+            }
             if let error = controller.error {
                 ContentUnavailableView { Label("Couldn’t open book", systemImage: "exclamationmark.triangle") }
                     description: { Text(error) }
@@ -445,19 +470,15 @@ struct ReaderView: View {
         @Bindable var model = model
         return Form {
             Section("Tap to turn pages") {
-                LabeledContent("Edge width", value: "\(Int((model.preferences.pageTapZoneFraction * 100).rounded()))% per side")
-                Slider(value: $model.preferences.pageTapZoneFraction, in: 0.1...0.3, step: 0.05)
-                    .accessibilityLabel("Page-turn edge width")
-                    .accessibilityValue("\(Int((model.preferences.pageTapZoneFraction * 100).rounded())) percent per side")
+                adjustmentButton(.edgeWidth)
                 Text("Tap the left edge for the previous page, the right edge for the next page, and the center for controls. While scrolling an EPUB or zoomed in, taps show controls.").font(.caption).foregroundStyle(.secondary)
             }
             if prepared.book.format == .epub {
                 Picker("Theme", selection: $model.preferences.theme) { Text("Light").tag("light"); Text("Sepia").tag("sepia"); Text("Dark").tag("dark") }
                 Picker("Font", selection: $model.preferences.font) { Text("Georgia").tag("Georgia"); Text("System sans serif").tag("-apple-system"); Text("Palatino").tag("Palatino") }
-                LabeledContent("Text size", value: "\(Int(model.preferences.fontSize))")
-                Slider(value: $model.preferences.fontSize, in: 14...36, step: 1).accessibilityLabel("Text size")
-                Text("Line spacing"); Slider(value: $model.preferences.lineHeight, in: 1.2...2.2, step: 0.1).accessibilityLabel("Line spacing")
-                Text("Margins"); Slider(value: $model.preferences.margin, in: 8...64, step: 4).accessibilityLabel("Margins")
+                adjustmentButton(.textSize)
+                adjustmentButton(.lineSpacing)
+                adjustmentButton(.margins)
                 Toggle("Scroll vertically", isOn: $model.preferences.scrolling)
                 if !model.preferences.scrolling {
                     Picker("Page turn", selection: $model.preferences.pageTransition) {
@@ -477,6 +498,51 @@ struct ReaderView: View {
                 Button("Go to Page") { controller.returnPosition = controller.position; controller.command?("page", pageNumber - 1); panel = nil }.disabled(pageNumber < 1 || pageNumber > controller.pageCount)
             }
         }.formStyle(.grouped)
+    }
+    private func adjustmentButton(_ setting: ReaderAdjustment) -> some View {
+        Button { adjustment = setting } label: {
+            LabeledContent(setting.rawValue, value: adjustmentValue(setting))
+        }
+        .accessibilityHint("Adjust while previewing the book")
+    }
+    private func adjustmentValue(_ setting: ReaderAdjustment) -> String {
+        switch setting {
+        case .textSize: return "\(Int(model.preferences.fontSize))"
+        case .lineSpacing: return model.preferences.lineHeight.formatted(.number.precision(.fractionLength(1)))
+        case .margins: return "\(Int(model.preferences.margin))"
+        case .edgeWidth: return "\(Int((model.preferences.pageTapZoneFraction * 100).rounded()))% per side"
+        }
+    }
+    private func compactAdjustment(_ setting: ReaderAdjustment) -> some View {
+        @Bindable var model = model
+        return VStack(spacing: 12) {
+            HStack {
+                Button { adjustment = nil } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
+                    .accessibilityLabel("All appearance settings")
+                Menu {
+                    ForEach(ReaderAdjustment.allCases.filter { prepared.book.format == .epub || $0 == .edgeWidth }) { option in
+                        Button(option.rawValue) { adjustment = option }
+                    }
+                } label: { Text(setting.rawValue).font(.headline) }
+                Spacer()
+                Text(adjustmentValue(setting)).monospacedDigit().foregroundStyle(.secondary)
+                #if os(macOS)
+                Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                    .accessibilityLabel("Close appearance")
+                #endif
+            }
+            Group {
+                switch setting {
+                case .textSize: Slider(value: $model.preferences.fontSize, in: 14...36, step: 1)
+                case .lineSpacing: Slider(value: $model.preferences.lineHeight, in: 1.2...2.2, step: 0.1)
+                case .margins: Slider(value: $model.preferences.margin, in: 8...64, step: 4)
+                case .edgeWidth: Slider(value: $model.preferences.pageTapZoneFraction, in: 0.1...0.3, step: 0.05)
+                }
+            }
+            .accessibilityLabel(setting.rawValue)
+            .accessibilityValue(adjustmentValue(setting))
+        }
+        .padding(.horizontal, 24).padding(.vertical, 12)
     }
     private var searchField: some View {
         HStack(spacing: 8) {
