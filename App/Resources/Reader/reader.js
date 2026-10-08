@@ -131,7 +131,7 @@ function preferences(p) {
   const colors = setReaderTheme(rendition, p);
   document.body.style.background = colors[0];
   document.body.style.color = colors[1];
-  rendition.flow(p.scrolling ? 'scrolled-doc' : 'paginated');
+  rendition.flow(p.scrolling ? 'scrolled-continuous' : 'paginated');
   refreshChapterBreaks();
 }
 // One layout operation owns relocation suppression at a time. Requests arriving
@@ -395,7 +395,10 @@ window.readerCommand = async ({name,value}) => {
         viewportSize = {width:Math.max(1, Math.floor(bounds.width)), height:Math.max(1, Math.floor(bounds.height))};
         // Numeric dimensions disable EPUB.js's window-resize listener. Keyboard
         // focus may resize the window without changing the document's layout box.
-        rendition = book.renderTo('reader',{...viewportSize,resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false,flow:value.preferences.scrolling?'scrolled-doc':'paginated'});
+        // The continuous manager appends adjacent spine sections as the reader
+        // scrolls. Keep it for both flows so mode changes preserve one rendition,
+        // its hooks, and exact CFI instead of reverting to single-chapter scrolling.
+        rendition = book.renderTo('reader',{...viewportSize,manager:'continuous',resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false,flow:value.preferences.scrolling?'scrolled-continuous':'paginated'});
         // Strip active and remote content before any chapter is rendered.
         book.spine.hooks.content.register(sanitizePublication);
         rendition.hooks.content.register(contents => {

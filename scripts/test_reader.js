@@ -225,5 +225,46 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.equal(displays.length,displaysBeforeKeyboard,'Leave resize location restoration to EPUB.js instead of displaying twice');
  vm.runInContext('resizeViewport({width:0,height:0})',context);
  assert.equal(resized.length,1,'Ignore transient empty layout dimensions');
- console.log('Reader bridge: cancellation, ownership, stale errors, coalescing, navigation anchor, serialized layout and resize checks passed');
+ // Exercise the production open command, not a separate copy of its options.
+ // Both initial modes must retain a manager that can append adjacent chapters.
+ for (const initiallyScrolling of [false, true]) {
+   const flowMessages = [], flowTimers = new Map(), flows = [], anchors = [];
+   let options;
+   const location = {start:{cfi:'saved-anchor',href:'chapter.xhtml',displayed:{page:1,total:4}}};
+   const renderer = {
+     location, themes:{default(){}}, hooks:{content:{register(){}}}, on(){},
+     flow:value=>flows.push(value),
+     display:async target=>{ if (target) { anchors.push(target); location.start.cfi=target; } },
+   };
+   const publication = {
+     ready:Promise.resolve(), on(){},
+     renderTo:(_element,value)=>{ options=value; return renderer; },
+     spine:{get:()=>({index:0}),hooks:{content:{register(){}}}},
+     locations:{generate:async()=>{},length:()=>0,cfiFromPercentage:()=> 'fraction-anchor',percentageFromCfi:()=>0.25},
+     loaded:{navigation:Promise.resolve({toc:[]})},
+   };
+   const flowContext = {
+     window:{webkit:{messageHandlers:{reader:{postMessage:m=>flowMessages.push(m)}}}},
+     document:{body:{style:{}},getElementById:()=>({getBoundingClientRect:()=>({width:375,height:700})})},
+     ePub:()=>publication,
+     ResizeObserver:class {observe(){} disconnect(){}},
+     setTimeout:callback=>{flowTimers.set(1,callback);return 1;},clearTimeout:id=>flowTimers.delete(id),
+   };
+   vm.createContext(flowContext);
+   vm.runInContext(fs.readFileSync('App/Resources/Reader/reader.js','utf8'),flowContext);
+   await flowContext.window.readerCommand({name:'open',value:{url:'fixture.opf',cfi:'saved-anchor',preferences:{scrolling:initiallyScrolling}}});
+   assert.equal(options.manager,'continuous','Opening uses adjacent-chapter rendering in either mode');
+   assert.equal(options.flow,initiallyScrolling?'scrolled-continuous':'paginated');
+   assert.equal(flows.at(-1),options.flow,'Initial preferences agree with renderer setup');
+   assert.equal(flowMessages.at(-1).kind,'ready');
+   assert.equal(anchors.at(-1),'saved-anchor','Opening restores the saved exact location');
+   for (const scrolling of [!initiallyScrolling, initiallyScrolling]) {
+     await flowContext.window.readerCommand({name:'preferences',value:{scrolling}});
+     const apply=[...flowTimers.values()].at(-1);flowTimers.clear();await apply();
+     assert.equal(flows.at(-1),scrolling?'scrolled-continuous':'paginated','Mode changes retain continuous chapter flow');
+     assert.equal(anchors.at(-1),'saved-anchor','Mode changes restore the exact CFI');
+     assert.equal(flowMessages.filter(m=>m.kind==='error').length,0);
+   }
+ }
+ console.log('Reader bridge: cancellation, ownership, layout, resize, continuous-flow opening and mode restoration checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1});
