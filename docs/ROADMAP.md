@@ -38,7 +38,7 @@ Default to quiet, content-first reading. Reveal controls predictably on demand a
 | iPad | Comfortable portrait/landscape layouts, adaptive side panels, annotation space, and keyboard support. |
 | Mac | Native menus/shortcuts, pointer-friendly selection, resizable windows, sidebars, and reliable focus. |
 
-Stable cover geometry, readable typography, coherent spacing, accessible contrast, and restrained motion apply throughout the roadmap. Establish representative opening, page-turn, search, and selection baselines in 0.2; track regressions and set measured performance targets for 0.8.
+Stable cover geometry, readable typography, coherent spacing, accessible contrast, and restrained motion apply throughout the roadmap. Catalog grid/shelf cards reserve two title lines and one metadata line in equal-width columns. Covers use a 2:3 container with fitted artwork, preserving source proportions; mixed artwork may have space around it. Full titles remain available in details and accessibility labels. Compact list covers scale together with interface text. Establish representative opening, page-turn, search, and selection baselines in 0.2; track regressions and set measured performance targets for 0.8.
 
 ## Provider commitment
 
