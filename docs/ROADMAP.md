@@ -30,6 +30,8 @@ Small patches can ship within milestones. Version numbers indicate accepted outc
 
 ## Native reading standards
 
+In paginated readers, tap the left edge for the previous page, the right edge for the next page, and the center to toggle controls. Share a persistent edge-width setting across EPUB, PDF, and CBZ; preserve selection, links, and zoom gestures. Vertical EPUB scrolling keeps taps for controls. Track this in issue #43.
+
 Default to quiet, content-first reading. Reveal controls predictably on demand and optionally keep title/progress visible. Persist appearance settings and prevent controls from covering content or repaginating the book on every visibility change.
 
 | Platform | Tailoring |

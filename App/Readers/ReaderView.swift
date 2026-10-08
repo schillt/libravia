@@ -45,6 +45,14 @@ struct ReaderChapter: Identifiable {
     var navigationError = false
     func cancelSearch() { searchID = UUID().uuidString; command?("cancelSearch", nil); searching = false; if searchState == .searching { searchState = .idle } }
     func completeSearch(_ links: [ReaderLink], id: String) { guard id == searchID else { return }; results = links; searching = false; searchState = links.isEmpty ? .empty : .results }
+    var pageTapZoneFraction = 0.2
+    func tapped(at fraction: Double, canTurn: Bool = true) {
+        switch ReaderTapAction.action(at: fraction, edge: pageTapZoneFraction, canTurn: canTurn && ready) {
+        case .previous: command?("previous", nil)
+        case .next: command?("next", nil)
+        case .controls: controlsVisible.toggle()
+        }
+    }
     var ready = false
     var loadingStatus = "Opening book…"
     var error: String?
@@ -170,7 +178,8 @@ struct ReaderView: View {
             Text("This chapter could not be opened. Your current reading position is unchanged.")
         }
         .preferredColorScheme(darkReader ? .dark : .light)
-        .onAppear { controller.changed = { model.savePosition($0, book: prepared.book) }; scrubFraction = progressFraction }
+        .onAppear { controller.changed = { model.savePosition($0, book: prepared.book) }; scrubFraction = progressFraction; controller.pageTapZoneFraction = model.preferences.pageTapZoneFraction }
+        .onChange(of: model.preferences.pageTapZoneFraction) { _, width in controller.pageTapZoneFraction = width }
         .onChange(of: controller.ready) { _, ready in if ready { onContentReady(true) } }
         .onChange(of: controller.error) { _, error in if error != nil { onContentReady(false) } }
         .onChange(of: controller.controlsVisible) { _, visible in
@@ -435,6 +444,13 @@ struct ReaderView: View {
     private var appearance: some View {
         @Bindable var model = model
         return Form {
+            Section("Tap to turn pages") {
+                LabeledContent("Edge width", value: "\(Int((model.preferences.pageTapZoneFraction * 100).rounded()))% per side")
+                Slider(value: $model.preferences.pageTapZoneFraction, in: 0.1...0.3, step: 0.05)
+                    .accessibilityLabel("Page-turn edge width")
+                    .accessibilityValue("\(Int((model.preferences.pageTapZoneFraction * 100).rounded())) percent per side")
+                Text("Tap the left edge for the previous page, the right edge for the next page, and the center for controls. While scrolling an EPUB or zoomed in, taps show controls.").font(.caption).foregroundStyle(.secondary)
+            }
             if prepared.book.format == .epub {
                 Picker("Theme", selection: $model.preferences.theme) { Text("Light").tag("light"); Text("Sepia").tag("sepia"); Text("Dark").tag("dark") }
                 Picker("Font", selection: $model.preferences.font) { Text("Georgia").tag("Georgia"); Text("System sans serif").tag("-apple-system"); Text("Palatino").tag("Palatino") }

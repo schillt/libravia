@@ -80,7 +80,8 @@ struct ReaderPreferences: Codable, Equatable {
     var margin = 24.0
     var scrolling = false
     var pageTransition = "slide"
-    private enum CodingKeys: String, CodingKey { case theme, font, fontSize, lineHeight, margin, scrolling, pageTransition }
+    var pageTapZoneFraction = 0.2
+    private enum CodingKeys: String, CodingKey { case theme, font, fontSize, lineHeight, margin, scrolling, pageTransition, pageTapZoneFraction }
     init() {}
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -91,6 +92,18 @@ struct ReaderPreferences: Codable, Equatable {
         margin = try values.decodeIfPresent(Double.self, forKey: .margin) ?? 24
         scrolling = try values.decodeIfPresent(Bool.self, forKey: .scrolling) ?? false
         pageTransition = try values.decodeIfPresent(String.self, forKey: .pageTransition) ?? "slide"
+        pageTapZoneFraction = ReaderTapAction.edgeFraction(try values.decodeIfPresent(Double.self, forKey: .pageTapZoneFraction) ?? 0.2)
+    }
+}
+enum ReaderTapAction: Equatable {
+    case previous, next, controls
+    static func edgeFraction(_ value: Double) -> Double { value.isFinite ? min(0.3, max(0.1, value)) : 0.2 }
+    static func action(at fraction: Double, edge: Double, canTurn: Bool) -> ReaderTapAction {
+        guard canTurn, fraction.isFinite, (0...1).contains(fraction) else { return .controls }
+        let width = edgeFraction(edge)
+        if fraction < width { return .previous }
+        if fraction > 1 - width { return .next }
+        return .controls
     }
 }
 /// EPUB whole-book pagination is a reflow estimate; PDF/CBZ page totals are exact.
