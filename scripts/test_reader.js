@@ -28,6 +28,12 @@ assert.ok(excerpt.length > 200 && excerpt.length < 340, 'Search provides bounded
 const tick = async()=>{ await Promise.resolve(); await Promise.resolve(); };
 const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();return callback();};
 (async()=>{
+ vm.runInContext('viewportSize={width:1000,height:700};latestPreferences={fontSize:20,lineHeight:1.6,margin:24}',context);
+ assert.ok(vm.runInContext('reflowScale({width:660,height:700}).x',context)<1,'Narrowing compresses paper');
+ assert.ok(vm.runInContext('reflowScale({width:1200,height:700}).x',context)>1,'Widening stretches paper');
+ assert.ok(vm.runInContext('reflowScale(undefined,{fontSize:24}).x',context)>1,'Larger text stretches into place');
+ assert.ok(vm.runInContext('reflowScale(undefined,{lineHeight:1.2}).y',context)<1,'Tighter spacing compacts vertically');
+ vm.runInContext('viewportSize=undefined;latestPreferences=undefined',context);
  const originalSnapshot=context.renderSnapshot, snapshotJobs=[];
  let releaseSnapshot;
  context.renderSnapshot=value=>{

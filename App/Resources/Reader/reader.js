@@ -238,6 +238,16 @@ function resizeViewport(size) {
   pendingViewport = next;
   queueLayout(undefined, true);
 }
+// Animate painted paper toward its final proportions, not intermediate EPUB layouts.
+function reflowScale(size = pendingViewport, p = pendingPreferences) {
+  const before = latestPreferences || {}, after = {...before, ...p};
+  const width = viewportSize?.width || size?.width || 1;
+  const oldWidth = Math.max(1, width - 2 * (before.margin || 0));
+  const newWidth = Math.max(1, (size?.width || width) - 2 * (after.margin || 0));
+  const font = (after.fontSize || 20) / (before.fontSize || 20);
+  const clamp = value => Math.min(1.08, Math.max(0.92, value));
+  return {x:clamp(newWidth / oldWidth * font), y:clamp(font * (after.lineHeight || 1.6) / (before.lineHeight || 1.6))};
+}
 function queueLayout(p, resize = false) {
   if (p) p = {...latestPreferences,...p};
   if (p || resize) observedSectionPages.clear();
@@ -281,11 +291,17 @@ function queueLayout(p, resize = false) {
         activeTransition?.skipTransition();
         delete document.documentElement.dataset.pageTurn;
         delete document.documentElement.dataset.pageStyle;
+        const scale = reflowScale(), style = document.documentElement.style;
+        style?.setProperty('--reflow-out-x', scale.x);
+        style?.setProperty('--reflow-out-y', scale.y);
+        style?.setProperty('--reflow-in-x', 1 / scale.x);
+        style?.setProperty('--reflow-in-y', 1 / scale.y);
         document.documentElement.dataset.pageReflow = 'true';
         const transition = document.startViewTransition(async () => { await applyLayout(); await nextPaint(); }); activeTransition = transition; activeReflowTransition = transition;
         transition.finished.catch(() => {}).finally(() => {
           if (activeReflowTransition === transition) {
             activeReflowTransition = null; delete document.documentElement.dataset.pageReflow;
+            for (const key of ['--reflow-out-x','--reflow-out-y','--reflow-in-x','--reflow-in-y']) style?.removeProperty(key);
           }
           if (activeTransition === transition) activeTransition = null;
         });
