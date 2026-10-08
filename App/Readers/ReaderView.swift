@@ -107,6 +107,7 @@ struct ReaderView: View {
         #endif
     }
     private var readerChromeVisible: Bool { controller.controlsVisible || voiceOver }
+    private var macSidebarVisible: Bool { isDesktop && readerChromeVisible && (searchVisible || panel != nil) }
     private var pageContainsInfo: Bool { prepared.book.format == .epub && !model.preferences.scrolling }
     private func pageChrome(safeInsets: EdgeInsets) -> ReaderPageChrome {
         ReaderPageChrome(enabled: pageContainsInfo, showChapter: keepTitleVisible, showProgress: keepProgressVisible,
@@ -266,6 +267,7 @@ struct ReaderView: View {
           .statusBarHidden(pageContainsInfo && !controller.controlsVisible && !voiceOver)
           #endif
           #if os(macOS)
+          .frame(minWidth: 0, maxWidth: .infinity)
           .toolbarVisibility(readerChromeVisible ? .visible : .hidden, for: .windowToolbar)
           .toolbar {
               ToolbarItemGroup(placement: .primaryAction) {
@@ -281,10 +283,13 @@ struct ReaderView: View {
           }
           #endif
           #if os(macOS)
-          if readerChromeVisible && (searchVisible || panel != nil) {
+          if macSidebarVisible {
               // Reserve reading width without NSSplitView's full-height divider.
               // The glass panel floats on the same canvas and never covers text.
-              macSidebar.frame(width: min(340, max(280, geometry.size.width * 0.34)))
+              macSidebar
+                  .frame(width: 340)
+                  .layoutPriority(1)
+                  .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94, anchor: .topTrailing)).combined(with: .move(edge: .trailing)))
           }
           #endif
           if !isDesktop && usesSidebar && panel == .contents {
@@ -302,6 +307,8 @@ struct ReaderView: View {
               .background(.background)
           }
           }
+          // Animate only opening/closing, never changes inside a visible panel.
+          .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.92), value: macSidebarVisible)
           .onChange(of: usesSidebar, initial: true) { _, value in wideContents = value }
         }
         #if os(iOS)
@@ -790,32 +797,38 @@ struct ReaderView: View {
                 Spacer()
                 Button { closeSearch(); panel = nil } label: { Image(systemName: "xmark") }
                     .buttonStyle(.plain).accessibilityLabel("Close reader sidebar")
-            }.frame(height: 44).padding(.horizontal, 16)
-            Picker("Reader sidebar", selection: Binding<ReaderPanel>(
-                get: { searchVisible ? .search : panel ?? .contents },
-                set: { value in
-                    if value == .search { openSearch() }
-                    else { panel = value; closeSearch() }
-                })) {
-                Text("Contents").tag(ReaderPanel.contents)
-                Text("Appearance").tag(ReaderPanel.appearance)
-                if ReaderCapabilities(format: prepared.book.format).textSearch { Text("Search").tag(ReaderPanel.search) }
-            }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 12).padding(.bottom, 12)
+            }.frame(width: 260, height: 44).padding(.horizontal, 16)
+            MacReaderSidebarTabs(labels: ReaderCapabilities(format: prepared.book.format).textSearch
+                                 ? ["Contents", "Appearance", "Search"] : ["Contents", "Appearance"],
+                                 selection: Binding(
+                                    get: { searchVisible ? 2 : panel == .appearance ? 1 : 0 },
+                                    set: { value in
+                                        if value == 2 { openSearch() }
+                                        else { panel = value == 1 ? .appearance : .contents; closeSearch() }
+                                    }))
+                .frame(width: 268, height: 28)
+                .padding(.horizontal, 12).padding(.bottom, 12)
             Divider()
             if searchVisible {
                 HStack {
                     MacReaderSearchField(text: $search, onSubmit: { runSearch() }, onCancel: { closeSearch() })
+                        .frame(minWidth: 0, maxWidth: .infinity)
                         .onChange(of: search) { _, _ in
                             controller.cancelSearch(); controller.results = []; controller.searchState = .idle
                         }
                     Button("Search", action: runSearch)
                         .disabled(search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }.padding(12)
-                searchResults
+                }.frame(width: 268).padding(12)
+                searchResults.frame(width: 292)
             } else if panel == .appearance {
                 appearance.scrollContentBackground(.hidden)
             } else { contents.scrollContentBackground(.hidden) }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+            // Fix the glass bounds before applying material; intrinsic widths
+            // from search/results and changing slider values must not resize it.
+            .frame(width: 292, alignment: .top)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .clipped()
             .padding(8)
             .glassEffect(reduceTransparency || contrast == .increased ? .regular : .clear, in: RoundedRectangle(cornerRadius: 20))
             .padding(.horizontal, 16).padding(.vertical, 12)

@@ -89,6 +89,34 @@ private struct ReaderWindowLifecycle: NSViewRepresentable {
     }
 }
 
+/// Equal-width native segments keep tab geometry independent of selected labels.
+struct MacReaderSidebarTabs: NSViewRepresentable {
+    let labels: [String]
+    @Binding var selection: Int
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(labels: labels, trackingMode: .selectOne,
+                                         target: context.coordinator, action: #selector(Coordinator.select(_:)))
+        control.segmentDistribution = .fill
+        control.setAccessibilityLabel("Reader sidebar")
+        return control
+    }
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        context.coordinator.parent = self
+        control.segmentCount = labels.count
+        for (index, label) in labels.enumerated() {
+            control.setLabel(label, forSegment: index)
+            control.setWidth(268 / CGFloat(labels.count), forSegment: index)
+        }
+        control.selectedSegment = selection
+    }
+    final class Coordinator: NSObject {
+        var parent: MacReaderSidebarTabs
+        init(_ parent: MacReaderSidebarTabs) { self.parent = parent }
+        @objc func select(_ sender: NSSegmentedControl) { parent.selection = sender.selectedSegment }
+    }
+}
+
 /// Native search editing owns first responder once the field is mounted in its window.
 /// Updates refresh bindings/actions without taking focus back from the reader or results.
 struct MacReaderSearchField: NSViewRepresentable {
