@@ -205,18 +205,18 @@ struct ReaderView: View {
                         }
                         }
                     }}.foregroundStyle(readerForeground).padding(.horizontal, 16).frame(height: headerGutter).padding(.top, pageInsets.top)
-                    .background(controller.controlsVisible || voiceOver || !pageContainsInfo ? readerBackground : .clear)
+                    .background(pageContainsInfo ? .clear : readerBackground)
                     }
                 }
                 .overlay(alignment: .bottom) {
                     // Keep the native Menu's source mounted while the chrome fades.
                     // Removing it would dismiss an open system menu on the hide timer.
                     ZStack(alignment: .bottom) {
-                        if !isDesktop && !searchVisible && readerChromeVisible {
+                        if !isDesktop && !pageContainsInfo && !searchVisible && readerChromeVisible {
                             bottomChromeFade.frame(height: footerGutter).ignoresSafeArea(edges: .bottom)
                         }
                         readerControls.frame(maxWidth: 540)
-                            .background(readerChromeVisible ? readerBackground : .clear, in: RoundedRectangle(cornerRadius: 28))
+                            .background(isDesktop && readerChromeVisible ? readerBackground : .clear, in: RoundedRectangle(cornerRadius: 28))
                             .padding(.horizontal, isDesktop ? 24 : 16).padding(.bottom, (isDesktop ? 18 : 10) + pageInsets.bottom)
                             .opacity((!searchVisible || isDesktop) && readerChromeVisible ? 1 : 0)
                             .allowsHitTesting((!searchVisible || isDesktop) && readerChromeVisible)
