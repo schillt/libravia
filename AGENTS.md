@@ -25,6 +25,7 @@ LibraVia is a native Apple OS 27 reading hub for DRM-free EPUB, PDF, and CBZ boo
 - A cache is disposable; an explicitly saved offline book must eventually use durable storage. Until milestone 0.3 lands, current downloaded cache entries are not permanent offline saves.
 - Device-copy removal must never delete server files and must preserve reading data. Sign-out/forget-account behavior is a separate, explicitly defined operation.
 - Require no iCloud backend or LibraVia companion server for 1.0. Generic OPDS access does not imply annotation sync. BookLore and Storyteller native support remain investigation outcomes.
+- Treat visual and interaction improvements as ongoing work in every release, even without a dedicated design milestone. Track concrete UI reports as issues, include proportional accessibility and platform acceptance, and preserve previously accepted reading behavior. Milestone 0.8 completes broader platform acceptance; it does not defer earlier polish.
 - Use native, accessible Apple controls. Keep reading content unobscured, preserve locations during layout changes, and tailor compact/wide and touch/keyboard/pointer interactions.
 - Prefer existing dependencies and Apple frameworks. Discuss new dependencies, significant format expansion, or architecture changes before implementing them; record accepted decisions in an ADR.
 - Use original/public-domain books and synthetic accounts for tests. Never publish tokens, private URLs, device/account identifiers, raw traces, personal library screenshots, signing material, or private local paths.
