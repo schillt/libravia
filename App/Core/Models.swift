@@ -93,6 +93,22 @@ struct ReaderPreferences: Codable, Equatable {
         pageTransition = try values.decodeIfPresent(String.self, forKey: .pageTransition) ?? "slide"
     }
 }
+/// EPUB whole-book pagination is a reflow estimate; PDF/CBZ page totals are exact.
+enum ReaderPagination {
+    static func page(at fraction: Double, total: Int) -> Int {
+        guard total > 0 else { return 0 }
+        let progress = fraction.isFinite ? min(1, max(0, fraction)) : 0
+        return Int((progress * Double(total - 1)).rounded()) + 1
+    }
+    static func bookLabel(at fraction: Double, total: Int, estimated: Bool, scrolling: Bool = false) -> String {
+        if scrolling {
+            let progress = fraction.isFinite ? min(1, max(0, fraction)) : 0
+            return "\(Int((progress * 100).rounded()))% through book"
+        }
+        guard total > 0 else { return estimated ? "Book page estimate unavailable" : "Book pages unavailable" }
+        return "\(estimated ? "About page" : "Page") \(page(at: fraction, total: total)) of \(total)"
+    }
+}
 struct PreparedBook: Identifiable { var id: String { book.id }; var book: Book; var directory: URL; var document: URL; var images: [URL]; var position: ReadingPosition }
 enum ReaderError: LocalizedError {
     case message(String)

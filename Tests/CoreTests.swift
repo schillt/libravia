@@ -17,6 +17,18 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(preferences.pageTransition, "slide")
         XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: JSONEncoder().encode(preferences)), preferences)
     }
+    func testPaginationLabelsDistinguishExactPagesEstimatesAndScrolling() {
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0, total: 20, estimated: false), "Page 1 of 20")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 1, total: 20, estimated: false), "Page 20 of 20")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0.5, total: 20, estimated: true), "About page 11 of 20")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0.5, total: 20, estimated: true, scrolling: true), "50% through book")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0.5, total: 0, estimated: true), "Book page estimate unavailable")
+        XCTAssertEqual(ReaderPagination.page(at: 0.7, total: 1), 1)
+        XCTAssertEqual(ReaderPagination.page(at: 2, total: 20), 20)
+        XCTAssertEqual(ReaderPagination.page(at: .nan, total: 20), 1)
+        // Scrub previews and destination indices share the same one-based page mapping.
+        XCTAssertEqual(ReaderPagination.page(at: 0.25, total: 9) - 1, 2)
+    }
     func testProgressInteroperabilityUnits() {
         XCTAssertEqual(ReadingPosition(fraction: 0.42).ticks(for: .epub), 4_200_000)
         XCTAssertEqual(ReadingPosition(page: 7).ticks(for: .pdf), 70_000)

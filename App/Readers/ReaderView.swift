@@ -238,7 +238,7 @@ struct ReaderView: View {
                                 if !editing { scrubToProgress() }
                             }
                             .accessibilityLabel("Book position")
-                            .accessibilityValue(prepared.book.format == .epub ? "Approximately \(bookPageLabel)" : bookPageLabel)
+                            .accessibilityValue(bookPageLabel)
                         }.padding(.horizontal, 4).frame(maxWidth: .infinity)
                         Button { controller.command?("next", nil) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 56) }
                             .accessibilityLabel("Next page").keyboardShortcut(panel == nil && !searchVisible ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
@@ -313,10 +313,8 @@ struct ReaderView: View {
             if !model.preferences.scrolling, controller.chapterPageCount > 0, controller.chapterPage > 0 {
                 return "\(max(0, controller.chapterPageCount - controller.chapterPage)) pages left in chapter"
             }
-            if let currentChapter, controller.estimatedBookPages > 0 {
-                let chapterPages = max(1, Int((Double(controller.estimatedBookPages) * (currentChapter.end - currentChapter.start)).rounded()))
-                let remaining = Int((Double(chapterPages) * (1 - chapterProgressFraction)).rounded())
-                return "About \(max(0, remaining)) pages left in chapter"
+            if model.preferences.scrolling, currentChapter != nil {
+                return "\(Int((chapterProgressFraction * 100).rounded()))% through chapter"
             }
             return "Chapter pages unavailable"
         }
@@ -326,7 +324,7 @@ struct ReaderView: View {
         if prepared.book.format == .epub, let chapter = chapter(at: scrubFraction) {
             return "Chapter \(chapter.number)"
         }
-        return "Page \(Int((scrubFraction * Double(max(0, controller.pageCount - 1))).rounded()) + 1)"
+        return "Page \(ReaderPagination.page(at: scrubFraction, total: controller.pageCount))"
     }
     private var scrubChapterTitle: String? {
         guard prepared.book.format == .epub, let chapter = chapter(at: scrubFraction) else { return nil }
@@ -345,14 +343,14 @@ struct ReaderView: View {
     }
     private var bookPageLabel: String {
         let total = prepared.book.format == .epub ? controller.estimatedBookPages : controller.pageCount
-        guard total > 0 else { return "Book pages unavailable" }
-        let page = min(total, max(1, Int((scrubFraction * Double(max(0, total - 1))).rounded()) + 1))
-        return "Page \(page) of \(total)"
+        return ReaderPagination.bookLabel(at: scrubbing ? scrubFraction : progressFraction, total: total,
+                                          estimated: prepared.book.format == .epub,
+                                          scrolling: prepared.book.format == .epub && model.preferences.scrolling)
     }
     private func scrubToProgress() {
         controller.returnPosition = controller.position
         if prepared.book.format == .epub { seek(ReadingPosition(fraction: scrubFraction)) }
-        else { controller.command?("page", Int((scrubFraction * Double(max(0, controller.pageCount - 1))).rounded())) }
+        else { controller.command?("page", ReaderPagination.page(at: scrubFraction, total: controller.pageCount) - 1) }
     }
     private var currentBookmark: Bookmark? {
         (model.store?.bookmarks[prepared.id] ?? []).first { bookmark in
