@@ -2,6 +2,12 @@
 
 The release path is **alpha → beta → preview → main**. A milestone gate, a frozen commit, and explicit owner authorization control each promotion. Long-lived branches are not automatically synchronized and no branch name alone proves acceptance.
 
+## Current source release
+
+The owner authorized PR #59 into alpha and designated v0.2.0 on 2026-10-08. The reviewed feature source was `f62951a6e67778f2ababb641a74c0ab7fbf9e2ea`; squash integration is `86b3fd02fb95cfc8f85d02246b61e82e85c1167a`. Version metadata is 0.2.0/build 54. The `v0.2.0` tag identifies the final documentation/version commit; release notes are in [releases/0.2.0.md](releases/0.2.0.md). Publish it as an alpha prerelease, without binary assets or promotion of beta/preview/main.
+
+This is an explicit source-release designation, not a claim that every milestone gate passed. Keep #28 and outstanding issue acceptance open until evidence or a specific owner exception exists. See [VALIDATION.md](../VALIDATION.md) and [HANDOFF.md](HANDOFF.md). Future merges/promotions still require owner authorization.
+
 ## Promotion procedure
 
 1. Complete the relevant feature issues and record outstanding acceptance in the milestone gate.

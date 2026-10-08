@@ -2,6 +2,10 @@
 
 LibraVia is a native Apple OS 27 reading hub for DRM-free EPUB, PDF, and CBZ books. Start with the assigned GitHub issue and its latest comments. Current explicit owner instructions take precedence over repository guidance. Do not infer authorization to merge, promote, distribute, or publish a release from authorization to implement a feature.
 
+## Current checkpoint
+
+Version 0.2.0 is integrated on alpha; begin with [HANDOFF.md](docs/HANDOFF.md), [release notes](docs/releases/0.2.0.md) and [VALIDATION.md](VALIDATION.md). Gate #28 remains open. Do not recreate superseded PRs #42/#44/#45/#46/#47/#51/#52/#56 or treat their closure as completed acceptance. The next implementation milestone is 0.3, with reader acceptance and UI polish continuing.
+
 ## Read before work
 
 - [Roadmap](docs/ROADMAP.md): product promises, milestones, and acceptance gates.

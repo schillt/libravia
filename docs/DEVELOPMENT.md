@@ -2,6 +2,10 @@
 
 GitHub issues define work and acceptance; PRs define concrete changes; the project board records disposition. Repository guidance and ADRs let another engineer or agent continue without relying on a particular chat. Current explicit owner instructions take precedence.
 
+## Continuing after 0.2
+
+Read [HANDOFF.md](HANDOFF.md) before starting the next issue. PR #59 consolidated the reader implementation; eight superseded drafts were closed with retained-change references. Create new issue branches from updated alpha. Preserve older worktrees and the unrelated dirty main checkout until their owners reconcile them; do not copy stale reader changes back over alpha. Update both release notes and validation when actual acceptance evidence changes. Keep the generator and project marketing/build versions synchronized.
+
 ## Branches
 
 | Branch | Purpose | Incoming PRs |

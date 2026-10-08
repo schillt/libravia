@@ -1,6 +1,6 @@
 # LibraVia architecture
 
-The current 0.1 foundation is a shared native SwiftUI app with a Jellyfin adapter and separate EPUB, PDF, and comic surfaces. The 1.0 roadmap expands that foundation to multiple sources, durable offline books, annotations, and capability-aware server sync. Planned components below are contracts for future work, not claims of implemented support.
+The current 0.2 implementation is a shared native SwiftUI app with a Jellyfin adapter and separate EPUB, PDF, and comic surfaces, including a dedicated Mac reader window. The 1.0 roadmap expands that foundation to multiple sources, durable offline books, annotations, and capability-aware server sync. Planned components below are contracts for future work, not claims of implemented support.
 
 ## Current implementation
 

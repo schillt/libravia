@@ -2,6 +2,10 @@
 
 LibraVia will be a beautiful native reading hub for iPhone, iPad, and Mac on Apple OS 27. Everyday readers can connect self-hosted libraries or import their own books, read offline, highlight passages, take notes, and synchronize the reading data their existing servers support. Version 1.0 is quality-led; milestones have acceptance gates rather than calendar deadlines.
 
+## Current checkpoint
+
+The owner designated the integrated native reader work as the v0.2.0 alpha source release on 2026-10-08. See [release notes](releases/0.2.0.md) and [handoff](HANDOFF.md). This source-release designation does not assert unrecorded physical/server/distribution acceptance: gate #28 remains open for its documented checks. Next implementation milestone: 0.3 dependable offline library, alongside remaining reader acceptance and provider feasibility research.
+
 ## Product promises
 
 - Read comfortably with immersive, responsive, platform-tailored readers.
@@ -56,4 +60,4 @@ Exercise connect/import → find → save offline → read → annotate → clos
 
 Version 1.0 supports DRM-free EPUB, PDF, and CBZ. Sync uses existing servers only. Audiobooks, immersive narration, DRM, OCR, advanced drawing tools, social features, automatic cross-source merging, a required iCloud backend, and a LibraVia companion service are deferred.
 
-Implementation starts with 0.2. Provider feasibility work can proceed independently. Design, accessibility, and reliability are requirements in every milestone; 0.8 completes their cross-platform acceptance.
+The 0.2 implementation is integrated into alpha. Continue its open acceptance work while preparing 0.3; provider feasibility work can proceed independently. Design, accessibility, and reliability are requirements in every milestone; 0.8 completes their cross-platform acceptance.
