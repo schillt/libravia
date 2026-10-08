@@ -194,7 +194,7 @@ async function pageTap(x) {
 // during display are coalesced and applied before reporting positions resumes.
 let layoutTask, pendingPreferences, pendingResize = false;
 let viewportSize, viewportObserver, pendingViewport, searchPresentation = false;
-function setSearchPresentation(active) {
+async function setSearchPresentation(active) {
   searchPresentation = !!active;
   const element = document.getElementById('reader');
   if (!element || !viewportSize) return;
@@ -203,7 +203,16 @@ function setSearchPresentation(active) {
   // fixed until UIKit reports that the keyboard finished hiding.
   element.style.width = active ? viewportSize.width + 'px' : '';
   if (active) element.style.height = viewportSize.height + 'px';
-  else setPageChrome(pageChrome);
+  else {
+    setPageChrome(pageChrome);
+    await layoutTask;
+    await nextPaint();
+    if (!searchPresentation) {
+      clearChapterSelections();
+      if (ready && rendition?.location && book?.locations) reportPosition(rendition.location);
+      send('readerRevealed');
+    }
+  }
 }
 function resizeViewport(size) {
   const next = {width:Math.floor(size.width), height:Math.floor(size.height)};
@@ -681,7 +690,7 @@ window.readerCommand = async ({name,value}) => {
         }, 80);
         break;
       }
-      case 'searchPresentation': setSearchPresentation(value); break;
+      case 'searchPresentation': await setSearchPresentation(value); break;
       case 'cancelSearch': ++searchGeneration; break;
       case 'chapterSnippet': await chapterSnippet(value); break;
       case 'search': {

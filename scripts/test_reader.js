@@ -279,6 +279,7 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
    assert.equal(readerElement.style.height,'700px','Cancelling text search does not release the layout before keyboard dismissal');
    await context.window.readerCommand({name:'searchPresentation',value:false});
    assert.equal(readerElement.style.height,'calc(100% - 112px)','Closing search restores chapter and progress insets');
+   assert.equal(messages.at(-1).kind,'readerRevealed','Search dismissal explicitly rewarms native page-turn previews after layout and paint');
    vm.runInContext('resizeViewport({width:375,height:700})',context);
  }
  assert.equal(resized.length,0,'Repeated physical-keyboard cycles do not resize');

@@ -79,6 +79,7 @@ struct ReaderView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var searchVisible = false
     @State private var searchKeyboardVisible = false
+    @State private var searchRevealTask: Task<Void, Never>?
     @FocusState private var searchFocused: Bool
     @Namespace private var glassNamespace
     @State private var navigationTab = 0
@@ -106,9 +107,9 @@ struct ReaderView: View {
     }
     private var readerChromeVisible: Bool { isDesktop || controller.controlsVisible || voiceOver }
     private var pageContainsInfo: Bool { prepared.book.format == .epub && !model.preferences.scrolling }
-    private var pageChrome: ReaderPageChrome {
+    private func pageChrome(safeInsets: EdgeInsets) -> ReaderPageChrome {
         ReaderPageChrome(enabled: pageContainsInfo, showChapter: keepTitleVisible, showProgress: keepProgressVisible,
-                         top: headerGutter, bottom: isDesktop ? 28 : footerGutter,
+                         top: headerGutter + safeInsets.top, bottom: isDesktop ? 28 : footerGutter + safeInsets.bottom,
                          textSize: max(12, progressLineHeight - 4))
     }
     private var readerControlHeight: Double { isDesktop ? 36 : 52 }
@@ -127,10 +128,11 @@ struct ReaderView: View {
     var body: some View {
         @Bindable var model = model
         GeometryReader { geometry in
+          let pageInsets = !isDesktop && pageContainsInfo ? geometry.safeAreaInsets : EdgeInsets()
           let usesSidebar = (isDesktop || geometry.size.width >= 900) && !dynamicTypeSize.isAccessibilitySize
           HStack(spacing: 0) {
           NavigationStack {
-            readerSurface
+            readerSurface(chrome: pageChrome(safeInsets: pageInsets))
                 .mask {
                     if prepared.book.format == .epub && model.preferences.scrolling && !reduceTransparency && contrast != .increased {
                         VStack(spacing: 0) {
@@ -193,7 +195,7 @@ struct ReaderView: View {
                                 .glassEffectID("readerSearch", in: glassNamespace)
                         }
                         }
-                    }}.foregroundStyle(readerForeground).padding(.horizontal, 16).frame(height: headerGutter)
+                    }}.foregroundStyle(readerForeground).padding(.horizontal, 16).frame(height: headerGutter).padding(.top, pageInsets.top)
                     .background(controller.controlsVisible || voiceOver || !pageContainsInfo ? readerBackground : .clear)
                     }
                 }
@@ -206,7 +208,7 @@ struct ReaderView: View {
                         }
                         readerControls.frame(maxWidth: 540)
                             .background(readerChromeVisible ? readerBackground : .clear, in: RoundedRectangle(cornerRadius: 28))
-                            .padding(.horizontal, isDesktop ? 24 : 16).padding(.bottom, isDesktop ? 18 : 10)
+                            .padding(.horizontal, isDesktop ? 24 : 16).padding(.bottom, (isDesktop ? 18 : 10) + pageInsets.bottom)
                             .opacity((!searchVisible || isDesktop) && readerChromeVisible ? 1 : 0)
                             .allowsHitTesting((!searchVisible || isDesktop) && readerChromeVisible)
                             .accessibilityHidden((searchVisible && !isDesktop) || !readerChromeVisible)
@@ -253,6 +255,10 @@ struct ReaderView: View {
                 .presentationBackgroundInteraction(.enabled(upThrough: .height(compactPanelHeight)))
             }
           }
+          #if os(iOS)
+          .ignoresSafeArea(.container, edges: pageContainsInfo ? .vertical : [])
+          .statusBarHidden(pageContainsInfo && !controller.controlsVisible && !voiceOver)
+          #endif
           #if os(macOS)
           if searchVisible || panel != nil {
               Divider()
@@ -328,13 +334,14 @@ struct ReaderView: View {
         .onChange(of: compactPanelHeight) { _, height in
             if adjustment != nil { appearanceDetent = .height(height) }
         }
-        .onDisappear { controller.cancelSearch(); controller.changed = nil; Task { await model.flushProgress() } }
+        .onDisappear { searchRevealTask?.cancel(); controller.cancelSearch(); controller.changed = nil; Task { await model.flushProgress() } }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             searchKeyboardVisible = true
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
             searchKeyboardVisible = false
+            searchRevealTask?.cancel(); searchRevealTask = nil
             if !searchVisible { controller.command?("searchPresentation", false) }
         }
         #endif
@@ -562,10 +569,10 @@ struct ReaderView: View {
     private var readerSecondaryForeground: Color {
         darkReader ? .white.opacity(0.7) : .secondary
     }
-    private var readerSurface: some View {
+    private func readerSurface(chrome: ReaderPageChrome) -> some View {
         ZStack {
             switch prepared.book.format {
-            case .epub: EPUBSurface(prepared: prepared, controller: controller, preferences: model.preferences, chrome: pageChrome)
+            case .epub: EPUBSurface(prepared: prepared, controller: controller, preferences: model.preferences, chrome: chrome)
             case .pdf: PDFSurface(prepared: prepared, controller: controller)
             case .cbz: ComicSurface(prepared: prepared, controller: controller)
             case .unsupported: ContentUnavailableView("Unsupported book", systemImage: "book.closed")
@@ -859,6 +866,7 @@ struct ReaderView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
     private func openSearch() {
+        searchRevealTask?.cancel(); searchRevealTask = nil
         if isDesktop { panel = nil; adjustment = nil }
         if !isDesktop { controller.command?("searchPresentation", true) }
         withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = true }
@@ -869,7 +877,18 @@ struct ReaderView: View {
         withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = false }
         // Keep the EPUB box fixed through the keyboard dismissal animation.
         // Hardware-keyboard and Mac searches have no keyboard dismissal to await.
+        searchRevealTask?.cancel(); searchRevealTask = nil
         if !searchKeyboardVisible { controller.command?("searchPresentation", false) }
+        else {
+            // A interrupted keyboard dismissal must not leave the document frozen.
+            searchRevealTask = Task { @MainActor in
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                guard !Task.isCancelled, !searchVisible else { return }
+                searchKeyboardVisible = false
+                controller.command?("searchPresentation", false)
+                searchRevealTask = nil
+            }
+        }
     }
     private func runSearch() {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)

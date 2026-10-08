@@ -33,6 +33,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = coordinator; coordinator.web = web
         #if os(iOS)
+        web.scrollView.contentInsetAdjustmentBehavior = .never
         let tap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.readerTap(_:)))
         tap.cancelsTouchesInView = false
         tap.delegate = coordinator
@@ -79,6 +80,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         weak var host: UIView?
         weak var hostController: ReaderHostController?
         var curlTurning = false
+        private var searchPresented = false
         private var curlToken: UUID?
         private var curlCompletion: (() -> Void)?
         private var curlBlockedRegions: [CGRect] = []
@@ -100,7 +102,7 @@ struct EPUBSurface: EPUBViewRepresentable {
                 height: max(0, web.bounds.height - latestChrome.top - latestChrome.bottom)) : web.bounds
         }
         func canCurl(at point: CGPoint) -> Bool {
-            guard controller.ready, !curlTurning, turnToken == nil, pendingCard == nil, !textSelectionActive, let web,
+            guard controller.ready, !searchPresented, !curlTurning, turnToken == nil, pendingCard == nil, !textSelectionActive, let web,
                   !curlBlockedRegions.contains(where: { $0.contains(point) }) else { return false }
             guard contentBounds.contains(point) else { return false }
             return cachedAdjacentPage("previous") != nil || cachedAdjacentPage("next") != nil
@@ -168,7 +170,7 @@ struct EPUBSurface: EPUBViewRepresentable {
             adjacentPages.removeAll(); unavailablePages.removeAll()
         }
         private func warmAdjacentPages() {
-            guard controller.ready, !latestPreferences.scrolling,
+            guard controller.ready, !searchPresented, !latestPreferences.scrolling,
                   ["slide", "curl"].contains(latestPreferences.pageTransition), !UIAccessibility.isReduceMotionEnabled,
                   let web, let host, let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
             let key = cfi + "|" + String(describing: web.bounds.size) + "|" + String(describing: latestPreferences) + "|" + String(describing: latestChrome)
@@ -460,7 +462,7 @@ struct EPUBSurface: EPUBViewRepresentable {
             interactiveSwipe = nil; pendingCard = nil; interactiveFinishing = false; queuedTurns.removeAll()
         }
         private func cacheCurrentPage() {
-            guard controller.ready, !latestPreferences.scrolling,
+            guard controller.ready, !searchPresented, !latestPreferences.scrolling,
                   ["slide", "curl"].contains(latestPreferences.pageTransition), !UIAccessibility.isReduceMotionEnabled,
                   interactiveSwipe == nil, !interactiveFinishing, !curlTurning, turnToken == nil,
                   let web, let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
@@ -471,7 +473,7 @@ struct EPUBSurface: EPUBViewRepresentable {
             guard currentCaptureInFlight == nil else { currentCapturePending = true; return }
             let request = UUID(); cacheRequest = request; currentCaptureInFlight = request
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
-                guard let self, self.currentCaptureInFlight == request else { return }
+                guard let self, self.currentCaptureInFlight == request, self.cacheRequest == request, !self.searchPresented else { return }
                 // Quiesce this session rather than spawning overlapping retries.
                 self.currentCapturePending = false; self.cacheRequest = UUID()
                 self.invalidateSnapshots(); self.releaseSnapshotRenderer()
@@ -530,6 +532,12 @@ struct EPUBSurface: EPUBViewRepresentable {
         }
         func send(_ command: String, _ value: Any?) {
             #if os(iOS)
+            if command == "searchPresentation", let active = value as? Bool {
+                searchPresented = active
+                if active {
+                    abortInteractive(); invalidateSnapshots(); cachedPage = nil; cacheRequest = UUID()
+                }
+            }
             if command == "next" || command == "previous" {
                 if turnToken != nil || pendingCard != nil || curlTurning { queueTurn(command) } else { turnPage(command) }
                 return
@@ -615,6 +623,10 @@ struct EPUBSurface: EPUBViewRepresentable {
                 cacheCurrentPage()
                 #endif
             #if os(iOS)
+            case "readerRevealed":
+                guard !searchPresented else { return }
+                textSelectionActive = false
+                cacheCurrentPage()
             case "swipe":
                 if let direction = value["direction"] as? String, direction == "next" || direction == "previous" { send(direction, nil) }
             case "selection": textSelectionActive = value["active"] as? Bool ?? false
