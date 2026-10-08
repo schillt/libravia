@@ -797,11 +797,6 @@ struct ReaderView: View {
             } else { contents.scrollContentBackground(.hidden) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(8)
-            .background {
-                if !reduceTransparency && contrast != .increased {
-                    MacReaderPanelBackdrop().clipShape(RoundedRectangle(cornerRadius: 20))
-                }
-            }
             .glassEffect(reduceTransparency || contrast == .increased ? .regular : .clear, in: RoundedRectangle(cornerRadius: 20))
             .padding(.horizontal, 16).padding(.vertical, 12)
             // Continue the publication canvas behind the glass instead of the inspector

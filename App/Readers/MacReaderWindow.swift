@@ -239,17 +239,3 @@ struct MacReaderInput: NSViewRepresentable {
     deinit { if let inputMonitor { NSEvent.removeMonitor(inputMonitor) } }
 }
 #endif
-
-#if os(macOS)
-/// System backdrop samples wallpaper/other windows only inside the floating panel.
-struct MacReaderPanelBackdrop: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
-    func updateNSView(_ view: NSVisualEffectView, context: Context) { }
-}
-#endif
