@@ -47,6 +47,14 @@ final class CoreTests: XCTestCase {
             XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: data).pageTapZoneFraction, expected)
         }
     }
+    func testPageTurnReleaseIntentSupportsFlicksAndCancellingPeeks() {
+        XCTAssertTrue(ReaderTurnDecision.commits(translation: -160, velocity: 0, width: 375))
+        XCTAssertTrue(ReaderTurnDecision.commits(translation: -30, velocity: -900, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: -160, velocity: 250, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: -30, velocity: 0, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: 0, velocity: 1500, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: .nan, velocity: 0, width: 375))
+    }
     func testProgressInteroperabilityUnits() {
         XCTAssertEqual(ReadingPosition(fraction: 0.42).ticks(for: .epub), 4_200_000)
         XCTAssertEqual(ReadingPosition(page: 7).ticks(for: .pdf), 70_000)

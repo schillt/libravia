@@ -57,7 +57,7 @@ struct EPUBSurface: PlatformViewRepresentable {
         return container
     }
     func updateUIView(_ view: UIView, context: Context) { context.coordinator.preferences(preferences) }
-    static func dismantleUIView(_ view: UIView, coordinator: Coordinator) { coordinator.web?.configuration.userContentController.removeScriptMessageHandler(forName: "reader"); coordinator.controller.command = nil }
+    static func dismantleUIView(_ view: UIView, coordinator: Coordinator) { coordinator.web?.configuration.userContentController.removeScriptMessageHandler(forName: "reader"); coordinator.controller.command = nil; coordinator.stopSnapshots() }
     #endif
     @MainActor final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let prepared: PreparedBook
@@ -71,6 +71,7 @@ struct EPUBSurface: PlatformViewRepresentable {
         private var panStart: CGPoint?
         private var turnToken: UUID?
         private var outgoingPage: UIImageView?
+        private var settlingPage: UIImageView?
         private final class InteractiveSwipe {
             let start: CGPoint
             var translation: CGFloat = 0
@@ -80,16 +81,97 @@ struct EPUBSurface: PlatformViewRepresentable {
             var image: UIImage?
             var outgoing: UIImageView?
             var incoming: UIImageView?
-            var underlay: UIView?
             var direction: String?
-            var requested = false
-            var pageReady = false
+            var incomingDirection: String?
+            var readyTranslation: CGFloat = 0
+            var dragBias: CGFloat = 0
+            var animationDone = false
+            var mainReady = false
+            let turnID = UUID()
+            var waitedForPreview = false
             var shouldCommit = false
             init(start: CGPoint) { self.start = start }
         }
         private var interactiveSwipe: InteractiveSwipe?
-        private var rollbackSwipe: InteractiveSwipe?
+
         private var interactiveFinishing = false
+        private var snapshotWeb: WKWebView?
+        private var snapshotBooted = false
+        private var snapshotOrigin: [String: Any]?
+        private var snapshotRequest: String?
+        private var snapshotKey: String?
+        private var snapshotDirections: [String] = []
+        private var adjacentPages: [String: UIImage] = [:]
+        private var unavailablePages: Set<String> = []
+        private var pendingCard: InteractiveSwipe?
+        private var cardAnimator: UIViewPropertyAnimator?
+        private var queuedTurns: [String] = []
+        private func invalidateSnapshots() {
+            snapshotRequest = nil; snapshotKey = nil; snapshotDirections.removeAll()
+            adjacentPages.removeAll(); unavailablePages.removeAll()
+        }
+        private func warmAdjacentPages() {
+            guard controller.ready, !latestPreferences.scrolling, let web, let host,
+                  let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
+            let key = cfi + "|" + String(describing: web.bounds.size) + "|" + String(describing: latestPreferences)
+            guard key != snapshotKey else { return }
+            invalidateSnapshots(); snapshotKey = key
+            let request = UUID().uuidString; snapshotRequest = request
+            web.evaluateJavaScript("window.readerSnapshotOrigin()") { [weak self] result, _ in
+                guard let self, self.snapshotRequest == request else { return }
+                guard let origin = result as? [String: Any], origin["cfi"] as? String == self.controller.position.cfi else {
+                    self.invalidateSnapshots(); return
+                }
+                self.snapshotOrigin = origin; self.snapshotDirections = ["next", "previous"]
+                if self.snapshotWeb == nil {
+                    let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
+                    config.setURLSchemeHandler(BookScheme(directory: self.prepared.directory), forURLScheme: "appbook")
+                    config.userContentController.add(self, name: "reader")
+                    let renderer = WKWebView(frame: host.bounds, configuration: config)
+                    renderer.isUserInteractionEnabled = false; renderer.accessibilityElementsHidden = true
+                    renderer.autoresizingMask = [.flexibleWidth, .flexibleHeight]; renderer.navigationDelegate = self
+                    host.insertSubview(renderer, at: 0); self.snapshotWeb = renderer
+                    renderer.load(URLRequest(url: URL(string: "appbook://local/reader/index.html")!))
+                } else { self.captureAdjacentPage() }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                guard self?.snapshotRequest == request, self?.snapshotDirections.isEmpty == false else { return }
+                self?.invalidateSnapshots()
+            }
+        }
+        private func captureAdjacentPage() {
+            guard snapshotBooted, let origin = snapshotOrigin, let request = snapshotRequest,
+                  let direction = snapshotDirections.first else { return }
+            let relative = String(prepared.document.path.dropFirst(prepared.directory.path.count + 1))
+            var url = URLComponents(); url.scheme = "appbook"; url.host = "local"; url.path = "/publication/" + relative
+            let value: [String: Any] = ["url":url.url!.absoluteString,"origin":origin,"preferences":preferencesObject(),"direction":direction,"request":request]
+            guard let data = try? JSONSerialization.data(withJSONObject: ["name":"snapshot","value":value]), let json = String(data:data,encoding:.utf8) else { return }
+            snapshotWeb?.evaluateJavaScript("void window.readerCommand(\(json))")
+        }
+        private func receiveSnapshot(_ value: [String: Any], kind: String) {
+            if kind == "boot" { snapshotBooted = true; captureAdjacentPage(); return }
+            guard let request = value["request"] as? String, request == snapshotRequest else { return }
+            guard kind == "snapshotReady", let direction = value["direction"] as? String,
+                  direction == snapshotDirections.first else { invalidateSnapshots(); return }
+            if value["exists"] as? Bool != true {
+                unavailablePages.insert(direction); snapshotDirections.removeFirst(); captureAdjacentPage()
+                if let swipe = interactiveSwipe { updateInteractive(swipe) }
+                return
+            }
+            let config = WKSnapshotConfiguration(); config.afterScreenUpdates = true
+            snapshotWeb?.takeSnapshot(with: config) { [weak self] image, _ in
+                guard let self, self.snapshotRequest == request, direction == self.snapshotDirections.first else { return }
+                if let image { self.adjacentPages[direction] = image }
+                self.snapshotDirections.removeFirst()
+                if let swipe = self.interactiveSwipe { swipe.readyTranslation = swipe.translation; self.updateInteractive(swipe) }
+                self.captureAdjacentPage()
+            }
+        }
+        func stopSnapshots() {
+            abortInteractive(); invalidateSnapshots()
+            snapshotWeb?.configuration.userContentController.removeScriptMessageHandler(forName: "reader")
+            snapshotWeb?.removeFromSuperview(); snapshotWeb = nil
+        }
         private var cachedPage: UIImage?
         private var cachedPageSize: CGSize = .zero
         private var cachedPageCFI: String?
@@ -134,15 +216,17 @@ struct EPUBSurface: PlatformViewRepresentable {
         private func interactivePan(_ gesture: UIPanGestureRecognizer, in web: WKWebView) {
             switch gesture.state {
             case .began:
-                guard interactiveSwipe == nil, turnToken == nil, !interactiveFinishing else { return }
-                let swipe = InteractiveSwipe(start: gesture.location(in: web))
-                let initialMovement = gesture.translation(in: web).x
-                if abs(initialMovement) > 1 { swipe.direction = initialMovement < 0 ? "next" : "previous" }
-                interactiveSwipe = swipe
-                if cachedPageSize == web.bounds.size, cachedPageCFI == controller.position.cfi,
-                   cachedPagePreferences == latestPreferences {
-                    swipe.image = cachedPage
+                finishSettlingForInput()
+                if turnToken != nil || pendingCard != nil {
+                    if turnToken != nil || pendingCard != nil { panStart = gesture.location(in: web); return }
                 }
+                guard interactiveSwipe == nil else { return }
+                let swipe = InteractiveSwipe(start: gesture.location(in: web))
+                swipe.translation = gesture.translation(in: web).x
+                interactiveSwipe = swipe
+                warmAdjacentPages()
+                if cachedPageSize == web.bounds.size, cachedPageCFI == controller.position.cfi,
+                   cachedPagePreferences == latestPreferences { swipe.image = cachedPage }
                 let point = swipe.start
                 web.evaluateJavaScript("window.readerCanTurn(\(point.x),\(point.y))") { [weak self, weak swipe] result, _ in
                     guard let self, let swipe, self.interactiveSwipe === swipe else { return }
@@ -153,167 +237,148 @@ struct EPUBSurface: PlatformViewRepresentable {
                 if swipe.image == nil {
                     web.takeSnapshot(with: nil) { [weak self, weak swipe] image, _ in
                         guard let self, let swipe, self.interactiveSwipe === swipe else { return }
-                        swipe.image = image
-                        self.updateInteractive(swipe)
+                        swipe.image = image; self.updateInteractive(swipe)
                     }
                 }
             case .changed:
                 guard let swipe = interactiveSwipe else { return }
                 swipe.translation = gesture.translation(in: web).x
                 swipe.velocity = gesture.velocity(in: web).x
-                if swipe.direction == nil, abs(swipe.translation) >= 12 {
-                    swipe.direction = swipe.translation < 0 ? "next" : "previous"
-                }
                 updateInteractive(swipe)
             case .ended, .cancelled, .failed:
+                if panStart != nil {
+                    defer { panStart = nil }
+                    let movement = gesture.translation(in: web).x, velocity = gesture.velocity(in: web).x
+                    if gesture.state == .ended, ReaderTurnDecision.commits(translation: movement, velocity: velocity, width: web.bounds.width) {
+                        queueTurn(movement < 0 ? "next" : "previous")
+                    }
+                    return
+                }
                 guard let swipe = interactiveSwipe else { return }
                 swipe.translation = gesture.translation(in: web).x
-                swipe.velocity = gesture.velocity(in: web).x
-                swipe.ended = true
-                if swipe.direction == nil, abs(swipe.translation) >= 12 {
-                    swipe.direction = swipe.translation < 0 ? "next" : "previous"
-                }
-                let sameDirection = (swipe.direction == "next" && swipe.translation < 0) || (swipe.direction == "previous" && swipe.translation > 0)
-                let distance = sameDirection ? abs(swipe.translation) : 0
-                let isFlick = distance > 60 && abs(swipe.velocity) > 700 && swipe.translation * swipe.velocity > 0
-                swipe.shouldCommit = gesture.state == .ended && (distance >= web.bounds.width * 0.38 || isFlick)
-                if swipe.direction == nil || (!swipe.requested && !swipe.shouldCommit) { cancelInteractive(swipe, animated: true) }
-                else { updateInteractive(swipe) }
+                swipe.velocity = gesture.velocity(in: web).x; swipe.ended = true
+                swipe.shouldCommit = gesture.state == .ended && ReaderTurnDecision.commits(translation: swipe.translation, velocity: swipe.velocity, width: web.bounds.width)
+                updateInteractive(swipe)
             default: break
             }
         }
         private func updateInteractive(_ swipe: InteractiveSwipe) {
             guard interactiveSwipe === swipe, swipe.allowed == true, let web, let host else { return }
+            if abs(swipe.translation) >= 8 { swipe.direction = swipe.translation < 0 ? "next" : "previous" }
             if swipe.outgoing == nil, let image = swipe.image {
-                let underlay = UIView(frame: host.bounds)
-                underlay.backgroundColor = switch latestPreferences.theme {
-                case "sepia": UIColor(red: 244 / 255, green: 236 / 255, blue: 216 / 255, alpha: 1)
-                case "dark": UIColor(white: 23 / 255, alpha: 1)
-                default: .white
-                }
-                underlay.isUserInteractionEnabled = false
-                underlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                let paperTexture = UIImageView(image: image)
-                paperTexture.frame = underlay.bounds
-                paperTexture.contentMode = .scaleToFill
-                paperTexture.alpha = 0.16
-                paperTexture.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                underlay.addSubview(paperTexture)
-                host.addSubview(underlay)
-                swipe.underlay = underlay
                 let outgoing = UIImageView(image: image)
-                outgoing.frame = host.bounds
-                outgoing.contentMode = .scaleToFill
+                outgoing.frame = host.bounds; outgoing.contentMode = .scaleToFill
                 outgoing.isUserInteractionEnabled = false
                 outgoing.autoresizingMask = [.flexibleWidth, .flexibleHeight]
                 outgoing.layer.shadowColor = UIColor.black.cgColor
-                outgoing.layer.shadowOpacity = 0.18
-                outgoing.layer.shadowRadius = 12
-                host.addSubview(outgoing)
-                swipe.outgoing = outgoing
+                outgoing.layer.shadowOpacity = 0.18; outgoing.layer.shadowRadius = 6
+                outgoing.layer.shadowPath = UIBezierPath(rect: outgoing.bounds).cgPath
+                host.addSubview(outgoing); swipe.outgoing = outgoing
             }
-            guard let outgoing = swipe.outgoing else {
-                if swipe.ended {
-                    if swipe.shouldCommit, let direction = swipe.direction { sendRaw(direction, nil) }
-                    interactiveSwipe = nil
-                }
+            guard let outgoing = swipe.outgoing, let direction = swipe.direction else {
+                if swipe.ended { cancelInteractive(swipe, animated: true) }
                 return
+            }
+            if swipe.incomingDirection != direction {
+                swipe.incoming?.removeFromSuperview(); swipe.incoming = nil; swipe.incomingDirection = direction
+            }
+            if swipe.incoming == nil, let image = adjacentPages[direction] {
+                let incoming = UIImageView(image: image)
+                incoming.frame = host.bounds; incoming.contentMode = .scaleToFill
+                incoming.isUserInteractionEnabled = false; incoming.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                host.insertSubview(incoming, belowSubview: outgoing); swipe.incoming = incoming
+                // Keep a cold drag continuous when its genuine preview arrives.
+                swipe.dragBias = swipe.waitedForPreview ? swipe.translation - outgoing.transform.tx : 0
+                swipe.readyTranslation = swipe.waitedForPreview ? swipe.translation : 0
+                swipe.waitedForPreview = false
             }
             let width = max(1, web.bounds.width)
             let offset: CGFloat
-            if let direction = swipe.direction {
-                offset = direction == "next" ? min(0, swipe.translation) : max(0, swipe.translation)
-            } else {
-                offset = swipe.translation
-            }
-            // Let the card track the finger while the faint page texture
-            // bridges the short wait for the incoming WebKit snapshot.
-            let pull = min(1, abs(offset) / width)
-            outgoing.layer.shadowOpacity = Float(0.18 + 0.18 * pull)
-            outgoing.layer.shadowRadius = 12 + 10 * pull
-            let visibleOffset = offset
-            outgoing.transform = CGAffineTransform(translationX: max(-width, min(width, visibleOffset)), y: 0)
-            if let incoming = swipe.incoming, let direction = swipe.direction {
-                let progress = min(1, abs(visibleOffset) / width)
-                let reveal = min(1, progress * 1.4)
-                let scale = 0.96 + 0.04 * reveal
-                let drift = (direction == "next" ? 1.0 : -1.0) * 24 * (1 - reveal)
-                incoming.transform = CGAffineTransform(translationX: drift, y: 0).scaledBy(x: scale, y: scale)
-                incoming.alpha = 0.85 + 0.15 * reveal
-            }
-            if let direction = swipe.direction, !swipe.requested {
-                swipe.requested = true
-                sendRaw("previewTurn", direction)
-            }
-            if swipe.ended, swipe.pageReady {
-                if swipe.shouldCommit { completeInteractive(swipe) }
-                else { rollbackInteractive(swipe) }
+            if swipe.incoming != nil {
+                let travelled = abs(swipe.translation - swipe.readyTranslation)
+                let bias = swipe.dragBias * max(0, 1 - travelled / (width * 0.35))
+                offset = swipe.translation - bias
+            } else { swipe.waitedForPreview = true; offset = swipe.translation * 0.08 }
+            outgoing.transform = CGAffineTransform(translationX: max(-width, min(width, offset)), y: 0)
+            if swipe.ended {
+                if swipe.shouldCommit && !unavailablePages.contains(direction) { completeInteractive(swipe) }
+                else { cancelInteractive(swipe, animated: true) }
             }
         }
         private func completeInteractive(_ swipe: InteractiveSwipe) {
-            guard interactiveSwipe === swipe, let web, let outgoing = swipe.outgoing, let direction = swipe.direction else { return }
-            interactiveSwipe = nil
-            interactiveFinishing = true
-            sendRaw("commitTurn", nil)
-            let remaining = max(0, 1 - abs(swipe.translation) / max(1, web.bounds.width))
-            let duration = max(0.22, min(0.48, 0.48 * remaining))
-            let distance = web.bounds.width * (direction == "next" ? -1 : 1)
-            UIView.animate(withDuration: duration, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
-                outgoing.transform = CGAffineTransform(translationX: distance, y: 0)
-                outgoing.alpha = 0.7
-                swipe.incoming?.transform = .identity
-                swipe.incoming?.alpha = 1
-            } completion: { _ in
-                outgoing.removeFromSuperview()
-                swipe.incoming?.removeFromSuperview()
-                swipe.underlay?.removeFromSuperview()
-                self.interactiveFinishing = false
-                self.sendRaw("clearSelection", nil)
-                self.cacheCurrentPage()
+            guard interactiveSwipe === swipe, let web, let direction = swipe.direction else { return }
+            interactiveSwipe = nil; interactiveFinishing = true; pendingCard = swipe
+            if swipe.incoming == nil {
+                // A cold fast flick still advances immediately. Never reveal a
+                // duplicate current page as if it were adjacent content.
+                swipe.outgoing?.transform = .identity; swipe.animationDone = true
+            } else if let outgoing = swipe.outgoing {
+                let distance = web.bounds.width * (direction == "next" ? -1 : 1)
+                let remaining = abs(distance - outgoing.transform.tx)
+                let speed = max(900, abs(swipe.velocity))
+                let duration = min(0.28, max(0.10, remaining / speed))
+                let animator = UIViewPropertyAnimator(duration: duration, curve: .easeOut) {
+                    outgoing.transform = CGAffineTransform(translationX: distance, y: 0)
+                }
+                cardAnimator = animator
+                animator.addCompletion { [weak self, weak swipe] _ in
+                    guard let self, let swipe, self.pendingCard === swipe else { return }
+                    swipe.animationDone = true; self.finishCardIfReady()
+                }
+                animator.startAnimation()
+            } else { swipe.animationDone = true }
+            sendNativeTurn(direction, token: swipe.turnID)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self, weak swipe] in
+                guard let self, let swipe, self.pendingCard === swipe else { return }
+                // Rendering failure cannot leave a snapshot blocking the book.
+                swipe.mainReady = true; self.finishSettlingForInput(); self.finishCardIfReady()
             }
         }
-        private func rollbackInteractive(_ swipe: InteractiveSwipe) {
-            guard interactiveSwipe === swipe, let outgoing = swipe.outgoing else { return }
-            interactiveSwipe = nil
-            rollbackSwipe = swipe
-            interactiveFinishing = true
-            let distance = abs(outgoing.transform.tx)
-            let duration = max(0.08, min(0.28, distance / max(1, outgoing.bounds.width) * 0.4))
-            UIView.animate(withDuration: duration, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
-                outgoing.transform = .identity
-                outgoing.alpha = 1
-            } completion: { _ in
-                self.sendRaw("cancelTurn", nil)
-            }
+        private func finishCardIfReady() {
+            guard let swipe = pendingCard, swipe.mainReady, swipe.animationDone else { return }
+            pendingCard = nil; interactiveFinishing = false; cardAnimator = nil
+            swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview()
+            cacheCurrentPage(); drainTurns()
+        }
+        private func finishSettlingForInput() {
+            settlingPage?.layer.removeAllAnimations(); settlingPage?.removeFromSuperview(); settlingPage = nil
+            if let swipe = pendingCard {
+                cardAnimator?.stopAnimation(true); cardAnimator = nil
+                if swipe.incoming != nil { swipe.outgoing?.removeFromSuperview() }
+                swipe.animationDone = true; finishCardIfReady()
+            } else if turnToken != nil { outgoingPage?.removeFromSuperview(); outgoingPage = nil }
+        }
+        private func queueTurn(_ direction: String) {
+            finishSettlingForInput()
+            queuedTurns.append(direction); drainTurns()
+        }
+        private func drainTurns() {
+            guard turnToken == nil, pendingCard == nil, interactiveSwipe == nil, !queuedTurns.isEmpty else { return }
+            let direction = queuedTurns.removeFirst()
+            // The renderer serializes actual changes. Rapid input skips the
+            // decorative settling animation rather than dropping page turns.
+            let token = UUID(); turnToken = token; sendNativeTurn(direction, token: token)
         }
         private func cancelInteractive(_ swipe: InteractiveSwipe, animated: Bool) {
-            guard interactiveSwipe === swipe, !swipe.requested else { return }
+            guard interactiveSwipe === swipe else { return }
             interactiveSwipe = nil
-            guard let outgoing = swipe.outgoing, animated else {
-                swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview(); swipe.underlay?.removeFromSuperview(); return
+            guard animated, let outgoing = swipe.outgoing else {
+                swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview(); return
             }
-            interactiveFinishing = true
-            UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
-                outgoing.transform = .identity
-            } completion: { _ in
-                outgoing.removeFromSuperview()
-                swipe.incoming?.removeFromSuperview()
-                swipe.underlay?.removeFromSuperview()
-                self.interactiveFinishing = false
-            }
+            let animator = UIViewPropertyAnimator(duration: 0.16, dampingRatio: 0.95) { outgoing.transform = .identity }
+            animator.addCompletion { _ in outgoing.removeFromSuperview(); swipe.incoming?.removeFromSuperview() }
+            animator.startAnimation()
         }
         private func abortInteractive() {
-            guard let swipe = interactiveSwipe ?? rollbackSwipe else { return }
-            interactiveSwipe = nil
-            rollbackSwipe = nil
-            interactiveFinishing = false
-            swipe.outgoing?.removeFromSuperview()
-            swipe.incoming?.removeFromSuperview()
-            swipe.underlay?.removeFromSuperview()
+            cardAnimator?.stopAnimation(true); cardAnimator = nil
+            for swipe in [interactiveSwipe, pendingCard].compactMap({ $0 }) {
+                swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview()
+            }
+            interactiveSwipe = nil; pendingCard = nil; interactiveFinishing = false; queuedTurns.removeAll()
         }
         private func cacheCurrentPage() {
             guard controller.ready, !latestPreferences.scrolling, interactiveSwipe == nil,
-                  rollbackSwipe == nil, !interactiveFinishing, turnToken == nil,
+                  !interactiveFinishing, turnToken == nil,
                   let web, let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
             let request = UUID(); cacheRequest = request
             let size = web.bounds.size, preferences = latestPreferences
@@ -321,13 +386,14 @@ struct EPUBSurface: PlatformViewRepresentable {
             configuration.afterScreenUpdates = true
             web.takeSnapshot(with: configuration) { [weak self] image, _ in
                 guard let self, self.cacheRequest == request, self.interactiveSwipe == nil,
-                      self.rollbackSwipe == nil, self.turnToken == nil, !self.interactiveFinishing,
+                      self.turnToken == nil, !self.interactiveFinishing,
                       self.controller.position.cfi == cfi, self.latestPreferences == preferences,
                       self.web?.bounds.size == size else { return }
                 self.cachedPage = image
                 self.cachedPageSize = size
                 self.cachedPageCFI = cfi
                 self.cachedPagePreferences = preferences
+                self.warmAdjacentPages()
             }
         }
         #endif
@@ -335,6 +401,7 @@ struct EPUBSurface: PlatformViewRepresentable {
             guard preferences != latestPreferences else { return }
             latestPreferences = preferences
             #if os(iOS)
+            abortInteractive(); invalidateSnapshots()
             cachedPage = nil; cacheRequest = UUID()
             web?.scrollView.isScrollEnabled = preferences.scrolling
             #endif
@@ -350,7 +417,10 @@ struct EPUBSurface: PlatformViewRepresentable {
         func preferencesObject() -> Any { (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(latestPreferences))) ?? [:] }
         func send(_ command: String, _ value: Any?) {
             #if os(iOS)
-            if command == "next" || command == "previous" { turnPage(command); return }
+            if command == "next" || command == "previous" {
+                if turnToken != nil || pendingCard != nil { queueTurn(command) } else { turnPage(command) }
+                return
+            }
             #endif
             sendRaw(command, value)
         }
@@ -359,7 +429,11 @@ struct EPUBSurface: PlatformViewRepresentable {
             web?.evaluateJavaScript("void window.readerCommand(\(json))") { [weak self] _, error in if error != nil { self?.controller.error = "The EPUB reader could not complete this action." } }
         }
         #if os(iOS)
+        private func sendNativeTurn(_ direction: String, token: UUID) {
+            sendRaw("nativeTurn", ["direction":direction,"request":token.uuidString])
+        }
         private func turnPage(_ direction: String) {
+            finishSettlingForInput()
             guard turnToken == nil, interactiveSwipe == nil, !interactiveFinishing, !latestPreferences.scrolling, let web else { return }
             guard latestPreferences.pageTransition != "instant", !UIAccessibility.isReduceMotionEnabled else {
                 sendRaw(direction, nil); return
@@ -376,7 +450,7 @@ struct EPUBSurface: PlatformViewRepresentable {
                     (self.host ?? web).addSubview(outgoing)
                     self.outgoingPage = outgoing
                 }
-                self.sendRaw(direction, nil)
+                self.sendNativeTurn(direction, token: token)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 guard self?.turnToken == token else { return }
@@ -386,16 +460,19 @@ struct EPUBSurface: PlatformViewRepresentable {
         private func finishTurn(direction: String, animated: Bool) {
             guard turnToken != nil else { return }
             turnToken = nil
+            defer { drainTurns() }
             guard let outgoing = outgoingPage else { sendRaw("clearSelection", nil); cacheCurrentPage(); return }
             outgoingPage = nil
-            guard animated, let web else { outgoing.removeFromSuperview(); sendRaw("clearSelection", nil); cacheCurrentPage(); return }
-            let distance = web.bounds.width * 0.8 * (direction == "next" ? -1 : 1)
+            guard animated, queuedTurns.isEmpty, let web else { outgoing.removeFromSuperview(); sendRaw("clearSelection", nil); cacheCurrentPage(); return }
+            settlingPage = outgoing
+            let distance = web.bounds.width * (direction == "next" ? -1 : 1)
             UIView.animate(withDuration: latestPreferences.pageTransition == "fade" ? 0.18 : 0.22,
                            delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
                 outgoing.transform = self.latestPreferences.pageTransition == "fade" ? .identity : CGAffineTransform(translationX: distance, y: 0)
                 outgoing.alpha = 0
             } completion: { _ in
                 outgoing.removeFromSuperview()
+                if self.settlingPage === outgoing { self.settlingPage = nil }
                 self.sendRaw("clearSelection", nil)
                 self.cacheCurrentPage()
             }
@@ -407,6 +484,9 @@ struct EPUBSurface: PlatformViewRepresentable {
                   message.frameInfo.request.url?.host == "local",
                   message.frameInfo.request.url?.path == "/reader/index.html",
                   let value = message.body as? [String: Any], let kind = value["kind"] as? String else { return }
+            #if os(iOS)
+            if message.webView === snapshotWeb { receiveSnapshot(value, kind: kind); return }
+            #endif
             switch kind {
             case "boot":
                 loaded = true
@@ -422,42 +502,12 @@ struct EPUBSurface: PlatformViewRepresentable {
             #if os(iOS)
             case "swipe":
                 if let direction = value["direction"] as? String, direction == "next" || direction == "previous" { send(direction, nil) }
-            case "previewReady":
-                if let swipe = interactiveSwipe, swipe.requested {
-                    let configuration = WKSnapshotConfiguration()
-                    configuration.afterScreenUpdates = true
-                    web?.takeSnapshot(with: configuration) { [weak self, weak swipe] image, _ in
-                        guard let self, let swipe, self.interactiveSwipe === swipe else { return }
-                        if let image, let host = self.host, let outgoing = swipe.outgoing {
-                            let incoming = UIImageView(image: image)
-                            incoming.frame = host.bounds
-                            incoming.contentMode = .scaleToFill
-                            incoming.isUserInteractionEnabled = false
-                            incoming.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                            incoming.alpha = 0
-                            host.insertSubview(incoming, belowSubview: outgoing)
-                            swipe.incoming = incoming
-                        }
-                        swipe.pageReady = true
-                        if swipe.ended { self.updateInteractive(swipe) }
-                        else {
-                            UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
-                                self.updateInteractive(swipe)
-                            }
-                        }
-                    }
+            case "turned":
+                if let swipe = pendingCard, value["request"] as? String == swipe.turnID.uuidString {
+                    swipe.mainReady = true; finishCardIfReady()
+                } else if value["request"] as? String == turnToken?.uuidString {
+                    finishTurn(direction: value["direction"] as? String ?? "next", animated: true)
                 }
-            case "turnCancelled":
-                if let swipe = rollbackSwipe {
-                    rollbackSwipe = nil
-                    swipe.outgoing?.removeFromSuperview()
-                    swipe.incoming?.removeFromSuperview()
-                    swipe.underlay?.removeFromSuperview()
-                    interactiveFinishing = false
-                    sendRaw("clearSelection", nil)
-                    cacheCurrentPage()
-                }
-            case "turned": finishTurn(direction: value["direction"] as? String ?? "next", animated: true)
             #endif
             case "position":
                 guard let fraction = value["fraction"] as? Double, fraction.isFinite else { return }
@@ -509,8 +559,16 @@ struct EPUBSurface: PlatformViewRepresentable {
             let scheme = navigationAction.request.url?.scheme
             decisionHandler(scheme == "appbook" || scheme == "about" || scheme == "blob" ? .allow : .cancel)
         }
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { controller.error = "The local reader could not be loaded." }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { controller.error = "The reader ran out of resources. Close this book and reopen it." }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            #if os(iOS)
+            if webView === snapshotWeb { invalidateSnapshots(); return }
+            #endif
+            controller.error = "The local reader could not be loaded." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            #if os(iOS)
+            if webView === snapshotWeb { stopSnapshots(); snapshotBooted = false; return }
+            #endif
+            controller.error = "The reader ran out of resources. Close this book and reopen it." }
     }
 }
 final class BookScheme: NSObject, WKURLSchemeHandler {
@@ -539,7 +597,7 @@ final class BookScheme: NSObject, WKURLSchemeHandler {
 extension EPUBSurface.Coordinator: UIGestureRecognizerDelegate {
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === pagePan, let pan = gestureRecognizer as? UIPanGestureRecognizer, let web else { return true }
-        guard controller.ready, !latestPreferences.scrolling, turnToken == nil, interactiveSwipe == nil, !interactiveFinishing else { return false }
+        guard controller.ready, !latestPreferences.scrolling, interactiveSwipe == nil else { return false }
         let movement = pan.translation(in: web)
         return abs(movement.x) > abs(movement.y) * 1.5
     }

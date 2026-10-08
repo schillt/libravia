@@ -350,7 +350,7 @@ window.readerCanTurn = (x, y) => {
   return true;
 };
 const nextPaint = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-function turn(direction, preview = false) {
+function turn(direction, preview = false, request = null) {
   // WebKit captures both rendered pages; EPUB.js only advances once between snapshots.
   // Keep the next gesture queued until both surfaces have finished moving.
   turnTask = turnTask.catch(() => {}).then(async () => {
@@ -364,7 +364,7 @@ function turn(direction, preview = false) {
         // EPUB.js can settle its relocation promise before WebKit paints the
         // new frame. The native incoming snapshot must see that new frame.
         await nextPaint();
-        send(preview ? 'previewReady' : 'turned',{direction});
+        send(preview ? 'previewReady' : 'turned',{direction,request});
       }
       return;
     }
@@ -395,6 +395,44 @@ function reportPosition(location) {
   const displayed = location.start.displayed || {};
   send('position',{cfi:current,href:location.start.href,fraction:book.locations.percentageFromCfi(current),chapterTitle:navigationTitles.get(location.start.index) || 'Reading',chapterPage:Math.ceil((displayed.page || 0)/(rendition.manager?.layout?.divisor || 1)),chapterPageCount:Math.ceil((displayed.total || 0)/(rendition.manager?.layout?.divisor || 1)),...paginationPosition(location)});
 }
+// A separate renderer prepares real adjacent pages. It has no persistence,
+// search, native gestures or full-book pagination work.
+let snapshotTask = Promise.resolve();
+window.readerSnapshotOrigin = () => {
+  if (!ready || scrolling || restoring || !rendition.location?.start) return null;
+  const start = rendition.location.start, divisor = rendition.manager.layout.divisor || 1;
+  return {cfi:start.cfi,href:start.href,page:Math.floor(((start.displayed?.page || 1)-1)/divisor),size:{...viewportSize}};
+};
+async function renderSnapshot(value) {
+  if (!book) {
+    book = ePub(value.url, {openAs:'opf'});
+    await withPaginationTimeout(book.ready);
+    book.spine.hooks.content.register(sanitizePublication);
+    rendition = book.renderTo('reader', {...value.origin.size,manager:'continuous',flow:'paginated',resizeOnOrientationChange:false,allowScriptedContent:false,allowPopups:false});
+    await withPaginationTimeout(rendition.started);
+    rendition.manager.viewSettings.forceEvenPages = true;
+  }
+  viewportSize = {...value.origin.size};
+  rendition.resize(viewportSize.width, viewportSize.height);
+  const colors = setReaderTheme(rendition, {...value.preferences,scrolling:false});
+  document.body.style.background = colors[0];
+  await withPaginationTimeout(rendition.display(value.origin.href));
+  let view = rendition.manager.views.find(book.spine.get(value.origin.href));
+  await withPaginationTimeout(waitForAssets(view));
+  await nextPaint();
+  rendition.manager.moveTo({left:value.origin.page * rendition.manager.layout.delta,top:0},view.width());
+  await rendition.reportLocation();await nextPaint();
+  const source = await rendition.currentLocation();
+  if (value.direction === 'next') await rendition.next(); else await rendition.prev();
+  await nextPaint();
+  for (const view of rendition.manager.views.displayed()) await withPaginationTimeout(waitForAssets(view));
+  await rendition.reportLocation();await nextPaint();
+  const destination = await rendition.currentLocation();
+  const exists = destination.start.index !== source.start.index || destination.start.displayed.page !== source.start.displayed.page;
+  for (const section of book.spine.spineItems) if (section.document && !sectionIsDisplayed(section)) section.unload();
+  send('snapshotReady',{request:value.request,direction:value.direction,exists,cfi:destination.start.cfi});
+}
+
 window.readerCommand = async ({name,value}) => {
   try {
     switch(name) {
@@ -485,6 +523,13 @@ window.readerCommand = async ({name,value}) => {
         }
         break;
       }
+      case 'snapshot':
+        snapshotTask = snapshotTask.catch(() => {}).then(() => renderSnapshot(value));
+        try { await snapshotTask; } catch (_) { send('snapshotError',{request:value.request}); }
+        break;
+      case 'nativeTurn':
+        if (value.direction === 'next' || value.direction === 'previous') await turn(value.direction, false, value.request);
+        break;
       case 'next': await turn('next'); break;
       case 'previous': await turn('previous'); break;
       case 'previewTurn': {

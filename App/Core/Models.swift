@@ -170,3 +170,14 @@ enum UserFacingError {
         return "The operation could not be completed. Please try again."
     }
 }
+
+/// Release intent for a horizontal page drag. Returning toward the origin is a
+/// cancellation even after a substantial peek; velocity projects quick flicks.
+enum ReaderTurnDecision {
+    static func commits(translation: Double, velocity: Double, width: Double) -> Bool {
+        guard translation.isFinite, velocity.isFinite, width.isFinite, width > 0, abs(translation) >= 18 else { return false }
+        if translation * velocity < 0 && abs(velocity) > 180 { return false }
+        let projected = abs(translation) + max(0, (translation < 0 ? -velocity : velocity)) * 0.14
+        return projected >= width * 0.35
+    }
+}
