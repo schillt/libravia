@@ -278,7 +278,7 @@ struct CatalogView: View {
                 model.discoveryBooks[discoveryCacheKey] = recentBooks; model.discoveryCollections[discoveryCacheKey] = homeCollections
             } catch { if key == homeDiscoveryKey, !Task.isCancelled { homeDiscoveryFailure = true } }
         }
-        .navigationTitle(parent?.name ?? (isSearch ? "Search" : resume ? "Home" : "Library"))
+        .appSurface().navigationTitle(parent?.name ?? (isSearch ? "Search" : resume ? "Home" : "Library"))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -447,7 +447,7 @@ struct CatalogFilterEditor: View {
                 } else { ProgressView("Finding available filters…") }
                 Button("Clear All") { selection = CatalogFilters() }.disabled(selection.isEmpty)
             }
-            .navigationTitle("Filters")
+            .appSurface().navigationTitle("Filters")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("Apply") { apply(selection) } }
@@ -508,7 +508,7 @@ struct CatalogAuthorPicker: View {
             else if !loading && offset < total { Button("Load More Authors") { more() } }
             else if !loading && authors.isEmpty { Text("No matching authors").foregroundStyle(.secondary) }
         }
-        .navigationTitle("Author")
+        .appSurface().navigationTitle("Author")
         .searchable(text: $query, prompt: "Find an author")
         .task(id: "\(query)|\(scope)|\(model.sessionID)|\(revision)") {
             pageTask?.cancel(); let token = UUID(); generation = token
@@ -646,7 +646,7 @@ struct BookDetailView: View {
             }.padding(24).frame(maxWidth: 800).frame(maxWidth: .infinity)
         }
         .task(id: displayed.summary) { overview = BookOverview.plainText(displayed.summary) }
-        .navigationTitle("Book Details")
+        .appSurface().navigationTitle("Book Details")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -735,9 +735,9 @@ struct SettingsView: View {
             Section("About") {
                 Text("LibraVia · 0.1.0")
                 Text("EPUB, PDF, and CBZ · DRM-free books")
-                NavigationLink("Open-source licenses") { ScrollView { VStack(alignment: .leading, spacing: 20) { ForEach(["EPUBjs-LICENSE", "Get-LICENSE", "JSZip-LICENSE", "JellyfinAPI-LICENSE", "SwiftAtomics-LICENSE", "SwiftCollections-LICENSE", "SwiftNIO-LICENSE", "SwiftNIO-NOTICE", "SwiftNIO-llhttp-LICENSE", "SwiftNIOTransportServices-LICENSE", "SwiftSystem-LICENSE"], id: \.self) { name in Text(name).font(.headline); Text(license(name)).font(.caption).textSelection(.enabled) } }.padding() }.navigationTitle("Licenses") }
+                NavigationLink("Open-source licenses") { ScrollView { VStack(alignment: .leading, spacing: 20) { ForEach(["EPUBjs-LICENSE", "Get-LICENSE", "JSZip-LICENSE", "JellyfinAPI-LICENSE", "SwiftAtomics-LICENSE", "SwiftCollections-LICENSE", "SwiftNIO-LICENSE", "SwiftNIO-NOTICE", "SwiftNIO-llhttp-LICENSE", "SwiftNIOTransportServices-LICENSE", "SwiftSystem-LICENSE"], id: \.self) { name in Text(name).font(.headline); Text(license(name)).font(.caption).textSelection(.enabled) } }.padding() }.appSurface().navigationTitle("Licenses") }
             }
-        }.formStyle(.grouped).navigationTitle("Settings")
+        }.formStyle(.grouped).appSurface().navigationTitle("Settings")
     }
     private func license(_ name: String) -> String { guard let url = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "Licenses") else { return "License included with source distribution." }; return (try? String(contentsOf: url, encoding: .utf8)) ?? "" }
 }

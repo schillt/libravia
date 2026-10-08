@@ -71,3 +71,5 @@ UI state updates stay on the main actor. File validation, image decoding, and ne
 Use additive migrations with meaningful restore/failure tests. Keep the existing archive/resource security boundaries. New dependencies need an accepted provenance/necessity decision. Changes to identity, storage lifetime, sync authority, supported platforms, or provider commitments require an ADR.
 
 Test persistence, namespace isolation, retry/conflict handling, and provider contracts with synthetic fixtures. Measure representative performance separately from automated pass/fail checks. Physical interaction, two-device sync, real-server compatibility, and distribution acceptance remain distinct gates in `VALIDATION.md` and the milestone issues.
+
+The persisted reader theme is the shared app color (Light, Sepia, Dark). Browsing canvases and EPUB paper use the same palette; native controls follow its light/dark scheme. Changing App color in reader Appearance updates browsing without a second preference or migration. Document artwork and PDF/comic page pixels retain their original colors.

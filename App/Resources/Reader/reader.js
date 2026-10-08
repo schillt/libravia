@@ -277,7 +277,7 @@ function queueLayout(p, resize = false) {
         if (anchor && relayout && !flowChanged) { await withPaginationTimeout(rendition.display(anchor)); }
       }
       };
-      if (pendingResize && !nativePageTurns && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches && typeof document.startViewTransition === 'function') {
+      if ((pendingResize || (pendingPreferences && paginationSignature(pendingPreferences) !== paginationSignature())) && !nativePageTurns && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches && typeof document.startViewTransition === 'function') {
         activeTransition?.skipTransition();
         delete document.documentElement.dataset.pageTurn;
         delete document.documentElement.dataset.pageStyle;

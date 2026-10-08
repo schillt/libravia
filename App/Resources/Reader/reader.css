@@ -25,12 +25,11 @@ html[data-page-style="fade"]::view-transition-new(page){animation:page-fade-in 2
 .reader-chapter-break { position:absolute; top:-36px; left:0; right:0; height:28px; display:flex; align-items:center; gap:14px; justify-content:center; font:500 13px -apple-system,sans-serif; color:inherit; opacity:.7; pointer-events:none; }
 .reader-chapter-break::before, .reader-chapter-break::after { content:""; flex:1; height:1px; background:currentColor; opacity:.3; }
 
-/* Keep the last painted page until resize restoration has finished. */
-html[data-page-reflow]::view-transition-group(page),
-html[data-page-reflow]::view-transition-old(page),
-html[data-page-reflow]::view-transition-new(page){animation:none!important}
-
-/* Soften intermediate text while a serialized Mac reflow settles. */
-html[data-layout-busy] #reader{filter:blur(3px)}
-html[data-page-reflow]::view-transition-old(page){filter:blur(3px);object-fit:cover;object-position:left top}
-@media(prefers-reduced-motion:reduce){html[data-layout-busy] #reader{filter:none}}
+/* Hold old paper through reflow, then gently resolve into the new layout.
+   Only painted layers animate; EPUB layout still changes once at final size. */
+html[data-page-reflow]::view-transition-group(page){animation:none!important}
+html[data-page-reflow]::view-transition-old(page){object-fit:cover;object-position:left top;animation:reflow-out 160ms ease-out both}
+html[data-page-reflow]::view-transition-new(page){animation:reflow-in 180ms ease-out both}
+@keyframes reflow-out{from{opacity:1;filter:blur(2px)}to{opacity:0;filter:blur(4px)}}
+@keyframes reflow-in{from{opacity:0;filter:blur(4px);transform:scale(.995)}to{opacity:1;filter:blur(0);transform:scale(1)}}
+@media(prefers-reduced-motion:reduce){html[data-page-reflow]::view-transition-old(page),html[data-page-reflow]::view-transition-new(page){animation:none!important;filter:none;transform:none}}

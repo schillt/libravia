@@ -48,7 +48,7 @@ struct LibraryLandingView: View {
                 }
             }.padding(20)
         }
-        .navigationTitle("Library")
+        .appSurface().navigationTitle("Library")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -167,7 +167,7 @@ private struct LibraryDirectoryView: View {
                 }
             }
         }
-        .navigationTitle(kind.rawValue)
+        .appSurface().navigationTitle(kind.rawValue)
         .searchable(text: $query, prompt: "Find \(kind.rawValue.lowercased())")
         .task(id: pageKey) {
             pageTask?.cancel(); items = []; offset = 0; total = 0; failure = nil; loading = false

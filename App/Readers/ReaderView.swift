@@ -184,7 +184,7 @@ struct ReaderView: View {
                                         .lineLimit(1).transition(.opacity)
                                 }
                                 Text(chapterHeaderLabel).font(.caption.weight(.semibold)).lineLimit(1)
-                                    .opacity(pageContainsInfo && (isDesktop || (!controller.controlsVisible && !voiceOver)) ? 0 : 1)
+                                    .opacity(pageContainsInfo && keepTitleVisible ? 0 : 1)
                                 if controller.controlsVisible, !bookmarkFeedback.isEmpty {
                                     Text(bookmarkFeedback).font(.caption2).foregroundStyle(readerSecondaryForeground).lineLimit(1)
                                 }
@@ -590,11 +590,7 @@ struct ReaderView: View {
     private var readerBackground: Color {
         switch prepared.book.format {
         case .epub:
-            switch model.preferences.theme {
-            case "sepia": Color(red: 244.0 / 255, green: 236.0 / 255, blue: 216.0 / 255)
-            case "dark": Color(red: 23.0 / 255, green: 23.0 / 255, blue: 23.0 / 255)
-            default: .white
-            }
+            AppAppearance.background(model.preferences.theme)
         case .cbz: .black
         default: Color(white: 0.92)
         }
@@ -673,7 +669,8 @@ struct ReaderView: View {
             }
             }
             if prepared.book.format == .epub {
-                Picker("Theme", selection: $model.preferences.theme) { Text("Light").tag("light"); Text("Sepia").tag("sepia"); Text("Dark").tag("dark") }
+                Picker("App color", selection: $model.preferences.theme) { Text("Light").tag("light"); Text("Sepia").tag("sepia"); Text("Dark").tag("dark") }
+                Text("Applies to reading and browsing.").font(.caption).foregroundStyle(.secondary)
                 Picker("Font", selection: $model.preferences.font) { Text("Georgia").tag("Georgia"); Text("System sans serif").tag("-apple-system"); Text("Palatino").tag("Palatino") }
                 #if os(macOS)
                 inlineAdjustment(.textSize)
