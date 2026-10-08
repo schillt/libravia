@@ -68,6 +68,11 @@ struct ReaderView: View {
     @State private var controller: ReaderController
     @State private var panel: ReaderPanel?
     @State private var adjustment: ReaderAdjustment?
+    @State private var appearanceDetent: PresentationDetent = .medium
+    @State private var expandedAppearanceDetent: PresentationDetent = .medium
+    @Namespace private var appearanceNamespace
+    @ScaledMetric(relativeTo: .body) private var compactPanelHeight = 150.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var searchVisible = false
     @State private var searchKeyboardVisible = false
     @FocusState private var searchFocused: Bool
@@ -163,7 +168,10 @@ struct ReaderView: View {
             #endif
             .sheet(isPresented: Binding(get: { panel != nil }, set: { if !$0 { panel = nil } })) {
                 Group {
-                    if let adjustment { compactAdjustment(adjustment) }
+                    if let adjustment {
+                        compactAdjustment(adjustment)
+                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
+                    }
                     else {
                         NavigationStack {
                             Group {
@@ -174,12 +182,19 @@ struct ReaderView: View {
                             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Close") { panel = nil } } }
                             #endif
                         }
+                        .transition(.opacity)
                     }
                 }
-                .frame(minWidth: 320, idealWidth: 420, minHeight: adjustment == nil ? 380 : 140)
-                .presentationDetents(adjustment == nil ? [.medium, .large] : [.height(150)])
+                .frame(minWidth: 320, idealWidth: 420)
+                #if os(macOS)
+                .frame(minHeight: adjustment == nil ? 380 : compactPanelHeight)
+                #endif
+                .animation(appearanceAnimation, value: adjustment)
+                // Keep the expanded detents available while the same sheet
+                // shrinks; never dismiss and present a second editor sheet.
+                .presentationDetents(adjustment == nil ? [.medium, .large] : [.height(compactPanelHeight), .medium, .large], selection: $appearanceDetent)
                 .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .height(150)))
+                .presentationBackgroundInteraction(.enabled(upThrough: .height(compactPanelHeight)))
             }
         }
         .alert("Chapter unavailable", isPresented: Binding(get: { controller.navigationError }, set: { controller.navigationError = $0 })) {
@@ -209,7 +224,13 @@ struct ReaderView: View {
             controller.controlsVisible = false
             #endif
         }
-        .onChange(of: panel) { _, value in if value == nil { adjustment = nil }; controlsActivity = UUID(); pageNumber = controller.position.page + 1 }
+        .onChange(of: panel) { _, value in
+            if value != nil { adjustment = nil; appearanceDetent = .medium; expandedAppearanceDetent = .medium }
+            controlsActivity = UUID(); pageNumber = controller.position.page + 1
+        }
+        .onChange(of: compactPanelHeight) { _, height in
+            if adjustment != nil { appearanceDetent = .height(height) }
+        }
         .onDisappear { controller.cancelSearch(); controller.changed = nil; Task { await model.flushProgress() } }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
@@ -250,8 +271,10 @@ struct ReaderView: View {
                 .transition(.opacity)
             }
             HStack(spacing: 2) {
+                        if showsPageTurnButtons {
                         Button { controller.command?("previous", nil) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 56) }
                             .accessibilityLabel("Previous page").keyboardShortcut(panel == nil && !searchVisible ? KeyboardShortcut(.leftArrow, modifiers: []) : nil)
+                        }
                         VStack(spacing: 0) {
                             Text(bookPageLabel)
                                 .font(.caption2).monospacedDigit().foregroundStyle(readerSecondaryForeground)
@@ -264,8 +287,10 @@ struct ReaderView: View {
                             .accessibilityLabel("Book position")
                             .accessibilityValue(prepared.book.format == .epub ? "Approximately \(bookPageLabel)" : bookPageLabel)
                         }.padding(.horizontal, 4).frame(maxWidth: .infinity)
+                        if showsPageTurnButtons {
                         Button { controller.command?("next", nil) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 56) }
                             .accessibilityLabel("Next page").keyboardShortcut(panel == nil && !searchVisible ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
+                        }
                         Rectangle().fill(readerSecondaryForeground.opacity(0.25)).frame(width: 1, height: 32).padding(.horizontal, 4)
                         Menu {
                             Button("Appearance and page turns", systemImage: "textformat.size") { panel = .appearance }
@@ -424,7 +449,7 @@ struct ReaderView: View {
             case .cbz: ComicSurface(prepared: prepared, controller: controller)
             case .unsupported: ContentUnavailableView("Unsupported book", systemImage: "book.closed")
             }
-            if adjustment == .edgeWidth {
+            if panel == .appearance && adjustment == .edgeWidth {
                 GeometryReader { geometry in
                     HStack(spacing: 0) {
                         Rectangle().fill(.tint.opacity(0.12)).frame(width: geometry.size.width * model.preferences.pageTapZoneFraction)
@@ -480,11 +505,36 @@ struct ReaderView: View {
             }
         }.formStyle(.grouped)
     }
-    private func adjustmentButton(_ setting: ReaderAdjustment) -> some View {
-        Button { adjustment = setting } label: {
-            LabeledContent(setting.rawValue, value: adjustmentValue(setting))
+    private var showsPageTurnButtons: Bool {
+        prepared.book.format != .epub || !model.preferences.scrolling
+    }
+    private var appearanceAnimation: Animation? {
+        reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.9)
+    }
+    private func selectAdjustment(_ setting: ReaderAdjustment?) {
+        if setting != nil && adjustment == nil { expandedAppearanceDetent = appearanceDetent }
+        withAnimation(appearanceAnimation) {
+            adjustment = setting
+            appearanceDetent = setting == nil ? expandedAppearanceDetent : .height(compactPanelHeight)
         }
-        .accessibilityHint("Adjust while previewing the book")
+    }
+    private func adjustmentButton(_ setting: ReaderAdjustment) -> some View {
+        Button { selectAdjustment(setting) } label: {
+            HStack(spacing: 12) {
+                Text(setting.rawValue).foregroundStyle(.primary)
+                    .matchedGeometryEffect(id: "title-" + setting.id, in: appearanceNamespace)
+                Spacer(minLength: 8)
+                Text(adjustmentValue(setting)).foregroundStyle(.secondary).monospacedDigit()
+                    .matchedGeometryEffect(id: "value-" + setting.id, in: appearanceNamespace)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .frame(minHeight: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(setting.rawValue)
+        .accessibilityValue(adjustmentValue(setting))
+        .accessibilityHint("Opens a compact slider while keeping the book visible")
     }
     private func adjustmentValue(_ setting: ReaderAdjustment) -> String {
         switch setting {
@@ -498,15 +548,24 @@ struct ReaderView: View {
         @Bindable var model = model
         return VStack(spacing: 12) {
             HStack {
-                Button { adjustment = nil } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
+                Button { selectAdjustment(nil) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
                     .accessibilityLabel("All appearance settings")
                 Menu {
                     ForEach(ReaderAdjustment.allCases.filter { prepared.book.format == .epub || $0 == .edgeWidth }) { option in
-                        Button(option.rawValue) { adjustment = option }
+                        Button(option.rawValue) { selectAdjustment(option) }
                     }
-                } label: { Text(setting.rawValue).font(.headline) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(setting.rawValue).font(.headline)
+                            .matchedGeometryEffect(id: "title-" + setting.id, in: appearanceNamespace)
+                        Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                    }.foregroundStyle(.primary)
+                }
+                .accessibilityHint("Choose a different appearance setting")
                 Spacer()
                 Text(adjustmentValue(setting)).monospacedDigit().foregroundStyle(.secondary)
+                    .matchedGeometryEffect(id: "value-" + setting.id, in: appearanceNamespace)
+                    .contentTransition(.numericText())
                 #if os(macOS)
                 Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
                     .accessibilityLabel("Close appearance")
