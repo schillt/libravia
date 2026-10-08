@@ -521,6 +521,11 @@ struct ReaderView: View {
                         Text("Instant").tag("instant")
                         Text("Fade").tag("fade")
                         Text("Card swipe").tag("slide")
+                        #if os(iOS)
+                        Text("Page curl").tag("curl")
+                        #else
+                        if model.preferences.pageTransition == "curl" { Text("Page curl (Fade on Mac)").tag("curl") }
+                        #endif
                     }
                     Text("Reduce Motion turns off page animations automatically.").font(.caption).foregroundStyle(.secondary)
                 }

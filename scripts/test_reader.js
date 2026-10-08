@@ -57,6 +57,18 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  assert.equal(transitions.length,1,'Native mobile turns skip the WebKit page transition');
  assert.equal(messages.at(-1).kind,'turned','Native animation starts only after the next page renders');
  assert.equal(messages.at(-1).direction,'next');
+ const ordered=[];
+ let releaseTurn;
+ context.mockRendition.next=()=>new Promise(resolve=>{releaseTurn=()=>{turns++;ordered.push('next');resolve();};});
+ const rapidA=context.window.readerCommand({name:'nativeTurn',value:{direction:'next',request:'rapid-a'}});
+ const rapidB=context.window.readerCommand({name:'nativeTurn',value:{direction:'previous',request:'rapid-b'}});
+ await tick();await tick();
+ assert.deepEqual(ordered,[],'Second input waits for rendering, not native decoration');
+ releaseTurn();await Promise.all([rapidA,rapidB]);
+ assert.deepEqual(messages.filter(m=>m.request==='rapid-a'||m.request==='rapid-b').map(m=>m.request),['rapid-a','rapid-b'],'Rapid requests are acknowledged in order with their own identity');
+ assert.equal(turns,2,'Rapid forward then backward inputs both execute');
+ assert.equal(transitions.length,1,'Rapid native input does not wait for a browser animation');
+ context.mockRendition.next=async()=>turns++;
  await context.window.readerCommand({name:'gesture',value:{action:'previous',x:30,y:40}});
  assert.equal(messages.at(-1).kind,'swipe','Native swipe requests the same animated turn as the arrow');
  assert.equal(messages.at(-1).direction,'previous');
