@@ -48,6 +48,8 @@ Verify compact and two-column pagination, exact scrubbing, reflow and isolated c
 
 ## Page-turn interaction contract
 
+On iPhone/iPad, both the live and adjacent-preview WebKit views disable automatic UIKit content-inset adjustment: the trusted shell reserves hardware safe areas exactly once. The preview is non-scrolling and non-bouncing; the live view permits native scroll/bounce only in vertical mode. Keep the full-page preview and live viewport identical when hosted under native curl controllers.
+
 On iPhone/iPad, card dragging uses an isolated sanitized WebKit rendition to prepare genuine adjacent-page images. Keep only the current/next/previous images, keyed by CFI, viewport and appearance. Invalidate obsolete work after navigation or reflow. The preview renderer cannot publish reading positions or provider progress. Peeking/cancelling leaves the live reader unchanged; release intent combines distance, velocity and reversal before committing one turn.
 
 Accept rapid input while decoration settles. Interrupt card settling on new input and serialize only live rendering, preserving ordered inputs with request IDs. Queued turns bypass decorative animation. Bound paint waits because WebKit can suspend animation frames under native surfaces; renderer failure must release snapshots and report recovery rather than leave an input lock or silently retry an uncertain turn.

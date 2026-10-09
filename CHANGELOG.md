@@ -1,5 +1,9 @@
 # Changelog
 
+## Revised 0.2.0 candidate — build 55
+
+- Align iPhone adjacent-page preview and live WebKit inset policies; prevent native bounce of horizontal page information. Production finger acceptance is tracked in #61.
+
 ## 0.2.0 — 2026-10-08
 
 Native reading and platform tailoring, released on alpha. See [full release notes](docs/releases/0.2.0.md) for evidence and open acceptance.
