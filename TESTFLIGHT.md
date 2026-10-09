@@ -6,7 +6,7 @@ LibraVia has one shared target, scheme, and bundle identifier. iOS/iPadOS and na
 
 ## 0.2 source-release status
 
-The v0.2.0 alpha source release uses marketing version 0.2.0 and build 54. This release work does not upload binaries or configure/trigger a Cloud release workflow. See [release notes](docs/releases/0.2.0.md) and [VALIDATION.md](VALIDATION.md). Any future archive/upload must verify its own exact commit, entitlements and platform processing; development builds from build 53 are historical evidence.
+The revised v0.2.0 alpha source release uses marketing version 0.2.0 and build 55, replacing the original build 54 source release at the owner’s direction. The owner will perform TestFlight operations. This release work does not upload binaries or configure/trigger a Cloud release workflow. See [release notes](docs/releases/0.2.0.md) and [VALIDATION.md](VALIDATION.md). Any future archive/upload must verify its own exact commit, entitlements and platform processing; development builds from build 53 are historical evidence.
 
 ## Revised build 55 test focus
 

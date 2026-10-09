@@ -2,6 +2,20 @@
 
 This report separates historical development evidence from verification of the exact publication or TestFlight candidate. It contains aggregate results only; local logs, private servers, accounts, device identifiers, reading locations, and screenshots are excluded.
 
+## Revised 0.2.0/build 55 checkpoint
+
+PR #62 runtime candidate is `4259c7604a0d08b2e3af55f04e90719fb5e21a40`; release-documentation changes preserve its runtime tree. The owner authorized integration into alpha and replacement of the v0.2.0 source release. Original build 54 remains historical below.
+
+| Evidence | Result | Limit |
+| --- | --- | --- |
+| iPhone Release | Signed build, signature verification and selected physical-device installation passed | Development install; no signed distribution archive or upload |
+| Owner feedback | Installed build seems to work fine | Scoped feedback; full card/curl gesture matrix remains open |
+| iPhone 18 Pro Simulator / iOS 27.0 | arm64 Debug build/launch; portrait/landscape and hidden/revealed-control clearance; next-page navigation and settled rotation reflow | Bundled original EPUB; no physical Dynamic Island performance or gesture certification |
+| Automated | Reader/frame checks passed | Does not establish direct-finger behavior |
+| Security | Scan `73b3a5ee-d3ae-463c-95df-f395cef2b1c4`: all seven patch files reviewed, no reportable findings or gaps | Static patch review; supplementary release-documentation review recorded in #62 |
+
+The owner will perform TestFlight operations. Gate #28 and incomplete #61 acceptance remain open. No beta/preview/main promotion is part of this patch.
+
 ## 0.2 alpha source-release checkpoint
 
 The owner authorized v0.2.0 on 2026-10-08. PR #59 reviewed feature candidate `f62951a6e67778f2ababb641a74c0ab7fbf9e2ea`; alpha squash commit `86b3fd02fb95cfc8f85d02246b61e82e85c1167a` preserves its runtime tree. The final release tag adds documentation and 0.2.0/build 54 metadata. Exact metadata/build checks and the supplementary security review are recorded in that release PR. See [release notes](docs/releases/0.2.0.md) and [handoff](docs/HANDOFF.md).
