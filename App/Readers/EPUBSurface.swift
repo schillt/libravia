@@ -41,6 +41,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         #endif
         #if os(iOS)
         web.scrollView.contentInsetAdjustmentBehavior = .never
+        web.scrollView.bounces = false
         let tap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.readerTap(_:)))
         tap.cancelsTouchesInView = false
         tap.delegate = coordinator
@@ -284,6 +285,12 @@ struct EPUBSurface: EPUBViewRepresentable {
                     config.setURLSchemeHandler(BookScheme(directory: self.prepared.directory), forURLScheme: "appbook")
                     config.userContentController.add(self, name: "reader")
                     let renderer = WKWebView(frame: host.bounds, configuration: config)
+                    // A full-page preview must use the same viewport as the live
+                    // reader. UIKit's default automatic inset adds safe-area bands
+                    // here even though the trusted shell already reserves them.
+                    renderer.scrollView.contentInsetAdjustmentBehavior = .never
+                    renderer.scrollView.isScrollEnabled = false
+                    renderer.scrollView.bounces = false
                     renderer.isUserInteractionEnabled = false; renderer.accessibilityElementsHidden = true
                     renderer.autoresizingMask = [.flexibleWidth, .flexibleHeight]; renderer.navigationDelegate = self
                     host.insertSubview(renderer, at: 0); self.snapshotWeb = renderer
@@ -608,6 +615,7 @@ struct EPUBSurface: EPUBViewRepresentable {
             abortInteractive(); resetCurl(); invalidateSnapshots()
             cachedPage = nil; cacheRequest = UUID()
             web?.scrollView.isScrollEnabled = preferences.scrolling
+            web?.scrollView.bounces = preferences.scrolling
             hostController?.configureCurl()
             #endif
             if loaded { send("preferences", preferencesObject()) }

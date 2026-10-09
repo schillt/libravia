@@ -8,6 +8,10 @@ LibraVia has one shared target, scheme, and bundle identifier. iOS/iPadOS and na
 
 The v0.2.0 alpha source release uses marketing version 0.2.0 and build 54. This release work does not upload binaries or configure/trigger a Cloud release workflow. See [release notes](docs/releases/0.2.0.md) and [VALIDATION.md](VALIDATION.md). Any future archive/upload must verify its own exact commit, entitlements and platform processing; development builds from build 53 are historical evidence.
 
+## Revised build 55 test focus
+
+The #61 candidate keeps version 0.2.0 and revises build to 55. On iPhone, turn card/curl pages forward and backward, cancel/reverse a drag and repeat rapid turns, with controls hidden and visible. Chapter and progress should retain the same vertical position without compressing or bouncing at the preview/live handoff. Check rotation, text-size recount, search-dismiss navigation and vertical chapter scrolling. This is a candidate test plan, not an upload or acceptance claim.
+
 ## Prerequisites
 
 - Active Apple Developer membership and App Store Connect permission to create the app and upload builds.

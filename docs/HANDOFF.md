@@ -1,5 +1,11 @@
 # Current development handoff
 
+## Revised reader candidate
+
+Issue #61 tracks production iPhone chapter/progress compression while turning horizontal card/curl pages. Branch `fix/61-mobile-preview-viewport` starts from alpha `7391c9c678316f9ee96c82857a0c51266fed1870`. Candidate keeps marketing version 0.2.0 and increments build to 55 in project and generator. The preview WKWebView now disables automatic content insets and native scrolling, matching the live full-page canvas; horizontal live/preview views disable native bounce, while vertical live scrolling retains bounce. This corrects an identified viewport-policy mismatch; direct production-device reproduction and fix acceptance remain required.
+
+Do not include the unrelated local Xcode Cloud configuration. Compile, security review, installation and direct finger acceptance remain separate evidence in #61 and its PR. Test card/curl forward/back/cancel with controls visible/hidden, rotate/recount and check vertical scroll/selection/links. The v0.2.0 tag below remains the original build 54 source release. No new merge/upload authorization is inferred from that release.
+
 ## Release checkpoint
 
 Owner authorized v0.2.0 on alpha, 2026-10-08. Feature PR #59 reviewed `f62951a6e67778f2ababb641a74c0ab7fbf9e2ea`; alpha squash commit is `86b3fd02fb95cfc8f85d02246b61e82e85c1167a`. Resolve tag `v0.2.0` for the final version/documentation commit and inspect its release PR for exact checks. App/project generator version: 0.2.0/build 54.
