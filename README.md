@@ -1,6 +1,8 @@
 # LibraVia
 
-LibraVia is a native SwiftUI reader for DRM-free EPUB, PDF, and CBZ books from a user-selected Jellyfin server. It targets iPhone, iPad, and native Mac on Apple OS 27 with Jellyfin 12. Audiobooks, additional providers, and older-platform compatibility are outside this MVP.
+The [roadmap to 1.0](docs/ROADMAP.md) defines the next milestones, including native reading, dependable offline books, multiple sources, annotations, and supported-server sync. Version 0.2.0 is the alpha source release for the native reading experience; later milestones remain planned. See [release notes](docs/releases/0.2.0.md), [changelog](CHANGELOG.md) and [current handoff](docs/HANDOFF.md) for shipped scope and remaining acceptance. Contributors and agents should start with [AGENTS.md](AGENTS.md), [architecture and ADRs](docs/ARCHITECTURE.md), and the [development workflow](docs/DEVELOPMENT.md).
+
+LibraVia is a native SwiftUI reader for DRM-free EPUB, PDF, and CBZ books from a user-selected Jellyfin server. It targets iPhone, iPad, and native Mac on Apple OS 27 with Jellyfin 12. Audiobooks, additional providers, and older-platform compatibility are planned after this release.
 
 ## Get started
 
@@ -16,10 +18,12 @@ The app identity changed during development. Earlier app containers and saved se
 - Home with Continue Reading, additional in-progress books, server recommendations, collections, and recently added books.
 - Library cover grids or compact rows, author/genre/collection browsing, contextual filters, and independent paginated catalog search.
 - Download-on-open with validation and a managed 1 GB cache. Download and confirmed device-only removal actions retain positions and bookmarks.
-- EPUB typography, themes, contents, bookmarks, text search, and finger-tracking page transitions. PDFKit search and navigation; native image pages for CBZ.
+- EPUB typography, shared app colors, contents, bookmarks, text search, continuous chapter scrolling and layout-based pagination. Adjustable edge taps, genuine adjacent-page previews, interruptible card turns and native iPhone/iPad page curl.
+- Separate resizable Mac reader window, native menus/shortcuts, trackpad-driven EPUB turns and a floating glass inspector with inline appearance sliders.
+- PDFKit search and position-preserving navigation; cancellable comic image decoding with distinct zoom/pan and page gestures.
 - Exact local EPUB locations, local bookmarks/preferences, coalesced Jellyfin progress writes, retry, conflict selection, and deliberate rematching when a server item disappears.
 
-Books are downloaded locally before reading; this is not progressive network rendering. Cached copies may be evicted. PDF text search requires a text layer; no OCR or DRM support is provided. EPUB book-wide page counts are layout-dependent estimates. Search is capped at 200 results.
+Books are downloaded locally before reading; this is not progressive network rendering. Cached copies may be evicted. PDF text search requires a text layer; no OCR or DRM support is provided. EPUB page counts describe rendered screens/spreads for the current layout; typography and viewport changes trigger a recount. Counting/unavailable status replaces stale counts. Vertical mode reports percentage progress. Unusual/fixed layouts and large books still require acceptance. Search is capped at 200 results.
 
 ## Architecture
 
@@ -55,12 +59,14 @@ xcodebuild -project JellyfinBooks.xcodeproj -scheme LibraVia -destination 'platf
 xcodebuild -project JellyfinBooks.xcodeproj -scheme LibraVia -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/libravia-build CODE_SIGNING_ALLOWED=NO build
 swift test --build-system native --scratch-path /tmp/libravia-tests
 node scripts/test_reader.js
+node scripts/test_reader_frame.js
+python3 -m unittest discover -s scripts/performance -p 'test_*.py'
 ```
 
 Run Xcode builds sequentially when sharing DerivedData. `scripts/generate_project.py` maintains the project without a third-party generator. Select signing locally rather than checking provisioning profiles, developer credentials, device identifiers, or personal signing settings into source control.
 
-## Beta and release status
+## Release and acceptance status
 
-This is an MVP prepared for internal TestFlight testing on iPhone/iPad and Mac. Repository publication, archive validation, upload, processing, and tester distribution are separate steps; source availability does not establish a distributed build. See [VALIDATION.md](VALIDATION.md) for verified evidence and open gates, [PRIVACY.md](PRIVACY.md) for data handling, [SECURITY.md](SECURITY.md) for sensitive reports, [TESTFLIGHT.md](TESTFLIGHT.md) for beta setup, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution boundaries.
+Version 0.2.0 is an owner-authorized alpha source release. It does not promote beta, preview or main, or establish a TestFlight/App Store distribution. Physical iPad, accessibility, sustained real-book Mac use and final mobile curl/search/haptic acceptance remain open in gate #28. Repository publication, archive validation, upload, processing, and tester distribution are separate steps; source availability does not establish a distributed build. See [VALIDATION.md](VALIDATION.md) for verified evidence and open gates, [PRIVACY.md](PRIVACY.md) for data handling, [SECURITY.md](SECURITY.md) for sensitive reports, [TESTFLIGHT.md](TESTFLIGHT.md) for beta setup, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution boundaries.
 
 A final signed archive needs its entitlements, privacy report, dependency notices, and App Store Connect answers reviewed. Cross-installation and Jellyfin web-reader synchronization, including offline conflicts and PDF/CBZ fixtures, remain release gates.

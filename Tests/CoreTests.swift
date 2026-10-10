@@ -15,7 +15,45 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(preferences.theme, "sepia")
         XCTAssertEqual(preferences.fontSize, 23)
         XCTAssertEqual(preferences.pageTransition, "slide")
+        XCTAssertEqual(preferences.pageTapZoneFraction, 0.2)
         XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: JSONEncoder().encode(preferences)), preferences)
+    }
+    func testPaginationLabelsDistinguishExactPagesEstimatesAndScrolling() {
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0, total: 20, estimated: false), "Page 1 of 20")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 1, total: 20, estimated: false), "Page 20 of 20")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0.5, total: 20, estimated: true), "About page 11 of 20")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0.5, total: 20, estimated: true, scrolling: true), "50% through book")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0.5, total: 0, estimated: true), "Book page estimate unavailable")
+        XCTAssertEqual(ReaderPagination.page(at: 0.7, total: 1), 1)
+        XCTAssertEqual(ReaderPagination.page(at: 2, total: 20), 20)
+        XCTAssertEqual(ReaderPagination.page(at: .nan, total: 20), 1)
+        // Scrub previews and destination indices share the same one-based page mapping.
+        XCTAssertEqual(ReaderPagination.page(at: 0.25, total: 9) - 1, 2)
+    }
+    func testReaderTapZonesPreserveCenterAndDisableTurnsWhenZoomedOrNotReady() {
+        XCTAssertEqual(ReaderTapAction.action(at: 0.05, edge: 0.2, canTurn: true), .previous)
+        XCTAssertEqual(ReaderTapAction.action(at: 0.95, edge: 0.2, canTurn: true), .next)
+        for center in [0.2, 0.5, 0.8] { XCTAssertEqual(ReaderTapAction.action(at: center, edge: 0.2, canTurn: true), .controls) }
+        XCTAssertEqual(ReaderTapAction.action(at: 0.15, edge: 0.1, canTurn: true), .controls)
+        XCTAssertEqual(ReaderTapAction.action(at: 0.15, edge: 0.3, canTurn: true), .previous)
+        for point in [0.0, 0.5, 1.0, Double.nan] { XCTAssertEqual(ReaderTapAction.action(at: point, edge: 0.2, canTurn: false), .controls) }
+        XCTAssertEqual(ReaderTapAction.action(at: -1, edge: 0.2, canTurn: true), .controls)
+    }
+    func testTapZoneWidthPersistsAndInvalidSavedWidthsKeepCenterReachable() throws {
+        var preferences = ReaderPreferences(); preferences.pageTapZoneFraction = 0.25
+        XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: JSONEncoder().encode(preferences)).pageTapZoneFraction, 0.25)
+        for (saved, expected) in [(0.01, 0.1), (0.9, 0.3)] {
+            let data = Data("{\"pageTapZoneFraction\":\(saved)}".utf8)
+            XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: data).pageTapZoneFraction, expected)
+        }
+    }
+    func testPageTurnReleaseIntentSupportsFlicksAndCancellingPeeks() {
+        XCTAssertTrue(ReaderTurnDecision.commits(translation: -160, velocity: 0, width: 375))
+        XCTAssertTrue(ReaderTurnDecision.commits(translation: -30, velocity: -900, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: -160, velocity: 250, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: -30, velocity: 0, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: 0, velocity: 1500, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: .nan, velocity: 0, width: 375))
     }
     func testProgressInteroperabilityUnits() {
         XCTAssertEqual(ReadingPosition(fraction: 0.42).ticks(for: .epub), 4_200_000)

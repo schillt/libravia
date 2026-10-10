@@ -80,7 +80,8 @@ struct ReaderPreferences: Codable, Equatable {
     var margin = 24.0
     var scrolling = false
     var pageTransition = "slide"
-    private enum CodingKeys: String, CodingKey { case theme, font, fontSize, lineHeight, margin, scrolling, pageTransition }
+    var pageTapZoneFraction = 0.2
+    private enum CodingKeys: String, CodingKey { case theme, font, fontSize, lineHeight, margin, scrolling, pageTransition, pageTapZoneFraction }
     init() {}
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -91,6 +92,34 @@ struct ReaderPreferences: Codable, Equatable {
         margin = try values.decodeIfPresent(Double.self, forKey: .margin) ?? 24
         scrolling = try values.decodeIfPresent(Bool.self, forKey: .scrolling) ?? false
         pageTransition = try values.decodeIfPresent(String.self, forKey: .pageTransition) ?? "slide"
+        pageTapZoneFraction = ReaderTapAction.edgeFraction(try values.decodeIfPresent(Double.self, forKey: .pageTapZoneFraction) ?? 0.2)
+    }
+}
+enum ReaderTapAction: Equatable {
+    case previous, next, controls
+    static func edgeFraction(_ value: Double) -> Double { value.isFinite ? min(0.3, max(0.1, value)) : 0.2 }
+    static func action(at fraction: Double, edge: Double, canTurn: Bool) -> ReaderTapAction {
+        guard canTurn, fraction.isFinite, (0...1).contains(fraction) else { return .controls }
+        let width = edgeFraction(edge)
+        if fraction < width { return .previous }
+        if fraction > 1 - width { return .next }
+        return .controls
+    }
+}
+/// EPUB whole-book pagination is a reflow estimate; PDF/CBZ page totals are exact.
+enum ReaderPagination {
+    static func page(at fraction: Double, total: Int) -> Int {
+        guard total > 0 else { return 0 }
+        let progress = fraction.isFinite ? min(1, max(0, fraction)) : 0
+        return Int((progress * Double(total - 1)).rounded()) + 1
+    }
+    static func bookLabel(at fraction: Double, total: Int, estimated: Bool, scrolling: Bool = false) -> String {
+        if scrolling {
+            let progress = fraction.isFinite ? min(1, max(0, fraction)) : 0
+            return "\(Int((progress * 100).rounded()))% through book"
+        }
+        guard total > 0 else { return estimated ? "Book page estimate unavailable" : "Book pages unavailable" }
+        return "\(estimated ? "About page" : "Page") \(page(at: fraction, total: total)) of \(total)"
     }
 }
 struct PreparedBook: Identifiable { var id: String { book.id }; var book: Book; var directory: URL; var document: URL; var images: [URL]; var position: ReadingPosition }
@@ -139,5 +168,16 @@ enum UserFacingError {
         if error is CancellationError || (error as? URLError)?.code == .cancelled { return "The operation was cancelled." }
         if error is URLError { return "Could not connect securely to the server. Check your connection and try again." }
         return "The operation could not be completed. Please try again."
+    }
+}
+
+/// Release intent for a horizontal page drag. Returning toward the origin is a
+/// cancellation even after a substantial peek; velocity projects quick flicks.
+enum ReaderTurnDecision {
+    static func commits(translation: Double, velocity: Double, width: Double) -> Bool {
+        guard translation.isFinite, velocity.isFinite, width.isFinite, width > 0, abs(translation) >= 18 else { return false }
+        if translation * velocity < 0 && abs(velocity) > 180 { return false }
+        let projected = abs(translation) + max(0, (translation < 0 ? -velocity : velocity)) * 0.14
+        return projected >= width * 0.35
     }
 }

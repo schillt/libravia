@@ -3,18 +3,39 @@ import SwiftUI
 @main struct JellyfinBooksApp: App {
     @State private var model = AppModel()
     var body: some Scene {
+        #if os(macOS)
         WindowGroup {
             RootView().environment(model)
                 .frame(minWidth: 320, minHeight: 480)
+                .preferredColorScheme(AppAppearance.scheme(model.preferences.theme))
         }
-        #if os(macOS)
         .defaultSize(width: 1100, height: 780)
+
+        Window("Reader", id: MacReaderWindow.sceneID) {
+            MacReaderWindow().environment(model)
+                .preferredColorScheme(AppAppearance.scheme(model.preferences.theme))
+        }
+        .defaultSize(width: 1000, height: 800)
+        .windowResizability(.automatic)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+        .commands { ReaderCommands() }
+        #else
+        WindowGroup {
+            RootView().environment(model)
+                .frame(minWidth: 320, minHeight: 480)
+                .preferredColorScheme(AppAppearance.scheme(model.preferences.theme))
+        }
+        .commands { ReaderCommands() }
         #endif
     }
 }
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
     @Namespace private var readerNamespace
     @State private var showingSyncReview = false
     @State private var checkedUnavailableID: String?
@@ -109,14 +130,46 @@ struct RootView: View {
             ReadingConflictChoice(conflict: conflict) { model.conflict = nil }
         }
         #if os(macOS)
-        .sheet(item: $model.readerLaunchBook, onDismiss: { model.closeReader() }) { book in BookOpeningView(book: book).environment(model).frame(minWidth: 650, minHeight: 550, idealHeight: 800) }
+        .onChange(of: model.readerLaunchBook?.id, initial: true) { _, bookID in
+            if bookID != nil { openWindow(id: MacReaderWindow.sceneID) }
+        }
         #else
         .fullScreenCover(item: $model.readerLaunchBook, onDismiss: { model.closeReader() }) { book in
             BookOpeningView(book: book).environment(model)
                 .navigationTransition(.zoom(sourceID: book.id, in: readerNamespace))
         }
         #endif
+        .appSurface()
         .environment(\.readerTransitionNamespace, readerNamespace)
         .onChange(of: scenePhase) { _, value in if value != .active { Task { await model.flushProgress() } } else { Task { await model.refreshCache() } } }
     }
+}
+
+/// One persisted appearance choice colors both browsing and reading surfaces.
+/// Keep these values in step with the trusted EPUB shell's paper palette.
+enum AppAppearance {
+    static func background(_ theme: String) -> Color {
+        switch theme {
+        case "sepia": Color(red: 244.0 / 255, green: 236.0 / 255, blue: 216.0 / 255)
+        case "dark": Color(red: 23.0 / 255, green: 23.0 / 255, blue: 23.0 / 255)
+        default: .white
+        }
+    }
+    static func scheme(_ theme: String) -> ColorScheme { theme == "dark" ? .dark : .light }
+}
+private struct AppSurfaceBackground: ViewModifier {
+    @Environment(AppModel.self) private var model
+    func body(content: Content) -> some View {
+        content
+            .scrollContentBackground(.hidden)
+            .background(AppAppearance.background(model.preferences.theme).ignoresSafeArea())
+            #if os(iOS)
+            .containerBackground(AppAppearance.background(model.preferences.theme), for: .navigation)
+            #else
+            .containerBackground(AppAppearance.background(model.preferences.theme), for: .window)
+            #endif
+    }
+}
+extension View {
+    func appSurface() -> some View { modifier(AppSurfaceBackground()) }
 }

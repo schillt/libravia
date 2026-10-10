@@ -1,0 +1,38 @@
+// swiftc App/Core/ReaderTrackpadGesture.swift scripts/test_reader_trackpad.swift -o /tmp/libravia-trackpad && /tmp/libravia-trackpad
+import Foundation
+@main struct TrackpadChecks {
+    static func main() {
+        var gesture = ReaderTrackpadGesture()
+        assert(gesture.update(x: -10, y: 0, phase: .began).consume)
+        assert(gesture.update(x: -55, y: 1, phase: .changed).direction == "next")
+        assert(gesture.update(x: -100, y: 0, phase: .changed).direction == nil)
+        assert(gesture.update(x: -100, y: 0, phase: .momentum).direction == nil)
+        assert(gesture.update(x: 70, y: 0, phase: .began).direction == "previous")
+        gesture.reset()
+        assert(!gesture.update(x: 1, y: 20, phase: .began).consume)
+        assert(!gesture.update(x: 100, y: 30, phase: .changed).consume)
+        gesture.reset()
+        assert(gesture.update(x: -25, y: 0, phase: .began).direction == nil)
+        assert(gesture.update(x: 0, y: 0, phase: .cancelled).direction == nil)
+        assert(!gesture.update(x: 0, y: 0, phase: .momentum).consume)
+        gesture.reset()
+        assert(!gesture.update(x: .nan, y: 0, phase: .began).consume)
+        var interaction = ReaderTrackpadInteraction()
+        let start = interaction.update(x: -12, y: 0, timestamp: 1, width: 600, phase: .began)
+        assert(start.update?.phase == "begin" && start.update?.translation == -36)
+        let glide = interaction.update(x: -20, y: 0, timestamp: 1.1, width: 600, phase: .changed)
+        assert(glide.update?.translation == -96 && glide.update?.commit == false)
+        let reverse = interaction.update(x: 30, y: 0, timestamp: 1.2, width: 600, phase: .changed)
+        assert(reverse.update?.translation == -6)
+        assert(interaction.update(x: 0, y: 0, timestamp: 1.3, width: 600, phase: .ended).update?.commit == false)
+        assert(interaction.update(x: -100, y: 0, timestamp: 1.4, width: 600, phase: .momentum).update == nil)
+        assert(interaction.update(x: -45, y: 0, timestamp: 2, width: 600, phase: .began).update?.commit == false)
+        assert(interaction.update(x: 0, y: 0, timestamp: 2.1, width: 600, phase: .ended).update?.commit == true)
+        _ = interaction.update(x: -10, y: 0, timestamp: 2.5, width: 600, phase: .began)
+        _ = interaction.update(x: -10, y: 0, timestamp: 2.52, width: 600, phase: .changed)
+        assert(interaction.update(x: 0, y: 0, timestamp: 2.54, width: 600, phase: .ended).update?.commit == true)
+        assert(interaction.update(x: 1, y: 20, timestamp: 3, width: 600, phase: .began).consume == false)
+        assert(interaction.update(x: 100, y: 0, timestamp: 3.1, width: 600, phase: .changed).consume == false)
+        print("PASS: discrete and finger-driven strokes, displacement, reversal, release/flick commit, momentum suppression and vertical passthrough")
+    }
+}
