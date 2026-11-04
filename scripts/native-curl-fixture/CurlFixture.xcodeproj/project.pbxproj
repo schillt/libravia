@@ -1,0 +1,24 @@
+// !$*UTF8*$!
+{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {
+ A00000000000000000000001 = {isa = PBXProject; attributes = {LastUpgradeCheck = 1600; TargetAttributes = {A00000000000000000000010 = {CreatedOnToolsVersion = 27.0;}; A00000000000000000000011 = {CreatedOnToolsVersion = 27.0; TestTargetID = A00000000000000000000010;};};}; buildConfigurationList = A00000000000000000000030; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; mainGroup = A00000000000000000000002; productRefGroup = A00000000000000000000003; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000010, A00000000000000000000011,);};
+ A00000000000000000000002 = {isa = PBXGroup; children = (A00000000000000000000004,A00000000000000000000005,A00000000000000000000003,); sourceTree = "<group>";};
+ A00000000000000000000003 = {isa = PBXGroup; children = (A00000000000000000000006,A00000000000000000000007,); name = Products; sourceTree = "<group>";};
+ A00000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fixture.swift; sourceTree = "<group>";};
+ A00000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITests/CurlTests.swift; sourceTree = "<group>";};
+ A00000000000000000000006 = {isa = PBXFileReference; explicitFileType = wrapper.application; path = CurlFixture.app; sourceTree = BUILT_PRODUCTS_DIR;};
+ A00000000000000000000007 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = CurlFixtureUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR;};
+ A00000000000000000000008 = {isa = PBXBuildFile; fileRef = A00000000000000000000004;};
+ A00000000000000000000009 = {isa = PBXBuildFile; fileRef = A00000000000000000000005;};
+ A00000000000000000000010 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000031; buildPhases = (A00000000000000000000020,); buildRules = (); dependencies = (); name = CurlFixture; productName = CurlFixture; productReference = A00000000000000000000006; productType = "com.apple.product-type.application";};
+ A00000000000000000000011 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000032; buildPhases = (A00000000000000000000021,); buildRules = (); dependencies = (A00000000000000000000025,); name = CurlFixtureUITests; productName = CurlFixtureUITests; productReference = A00000000000000000000007; productType = "com.apple.product-type.bundle.ui-testing";};
+ A00000000000000000000020 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000008,); runOnlyForDeploymentPostprocessing = 0;};
+ A00000000000000000000021 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000009,); runOnlyForDeploymentPostprocessing = 0;};
+ A00000000000000000000024 = {isa = PBXContainerItemProxy; containerPortal = A00000000000000000000001; proxyType = 1; remoteGlobalIDString = A00000000000000000000010; remoteInfo = CurlFixture;};
+ A00000000000000000000025 = {isa = PBXTargetDependency; target = A00000000000000000000010; targetProxy = A00000000000000000000024;};
+ A00000000000000000000030 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000040,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug;};
+ A00000000000000000000031 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000041,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug;};
+ A00000000000000000000032 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000042,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug;};
+ A00000000000000000000040 = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0;}; name = Debug;};
+ A00000000000000000000041 = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_BUNDLE_IDENTIFIER = local.libravia.curlfixture; PRODUCT_NAME = CurlFixture; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; CODE_SIGNING_ALLOWED = NO;}; name = Debug;};
+ A00000000000000000000042 = {isa = XCBuildConfiguration; buildSettings = {PRODUCT_BUNDLE_IDENTIFIER = local.libravia.curlfixtureUITests; PRODUCT_NAME = CurlFixtureUITests; GENERATE_INFOPLIST_FILE = YES; TEST_TARGET_NAME = CurlFixture; CODE_SIGNING_ALLOWED = NO;}; name = Debug;};
+}; rootObject = A00000000000000000000001; }

@@ -2,7 +2,13 @@
 
 The release path is **alpha → beta → preview → main**. A milestone gate, a frozen commit, and explicit owner authorization control each promotion. Long-lived branches are not automatically synchronized and no branch name alone proves acceptance.
 
-## Current source release
+## Current 0.2.5 alpha preparation
+
+The owner authorized publishing 0.2.5 as a GitHub alpha prerelease on 2026-11-03 and reconciling unfinished work into 0.3. Marketing version 0.2.5, repository build 56. Integrate the exact reviewed candidate through a PR into alpha, then tag that exact integrated tree as `v0.2.5` and publish as a prerelease. Do not advance beta, preview or main. The release carries no credential-bearing artifacts or private logs.
+
+See [release scope](releases/0.2.5.md) for included local features and outstanding offline/tools/iCloud work. Gates #28 and #29 remain open. GitHub publication, Cloud archive/upload, Apple processing and TestFlight group availability require separate evidence. The owner intends to send this version to TestFlight; no completed upload or availability is implied by the source release. See [TESTFLIGHT.md](../TESTFLIGHT.md).
+
+## Historical 0.2.0 source release
 
 The owner authorized PR #59 into alpha and designated v0.2.0 on 2026-10-08. The reviewed feature source was `f62951a6e67778f2ababb641a74c0ab7fbf9e2ea`; squash integration is `86b3fd02fb95cfc8f85d02246b61e82e85c1167a`. The owner subsequently authorized PR #62 into alpha and replacement of the v0.2.0 source release with the #61 viewport correction, using 0.2.0/build 55. Original build 54 source is retained at `7391c9c678316f9ee96c82857a0c51266fed1870`. The revised `v0.2.0` tag identifies the integrated build 55 tree; release notes are in [releases/0.2.0.md](releases/0.2.0.md). Publish it as an alpha prerelease, without binary assets or promotion of beta/preview/main.
 

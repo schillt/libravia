@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.5 alpha — build 56
+
+Reader and native UI refinements, with early local reading tools and offline-library features for testing. Reading data and imported books remain local; iCloud sync and restore are not connected. Gates #28 and #29 remain open. See [release notes](docs/releases/0.2.5.md) for scope and limitations.
+
 ## Revised 0.2.0 candidate — build 55
 
 - Align iPhone adjacent-page preview and live WebKit inset policies; prevent native bounce of horizontal page information. Production finger acceptance is tracked in #61.
@@ -15,7 +19,7 @@ Native reading and platform tailoring, released on alpha. See [full release note
 - Shared browsing/reader colors, consistent cover/title layouts and left-to-right opening dots.
 - PDF location preservation, comic decode cancellation and reproducible performance/reader regression tooling.
 
-Physical/device, real-book and distribution acceptance remains explicitly recorded in [VALIDATION.md](VALIDATION.md). No new provider, durable offline storage or annotation support is claimed.
+Physical/device, real-book and distribution acceptance remains explicitly recorded in [VALIDATION.md](VALIDATION.md). For 0.2.0, no new provider, durable offline storage or annotation support was claimed.
 
 ## 0.1.0 — Foundation
 

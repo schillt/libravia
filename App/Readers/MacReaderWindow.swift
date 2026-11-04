@@ -89,34 +89,6 @@ private struct ReaderWindowLifecycle: NSViewRepresentable {
     }
 }
 
-/// Equal-width native segments keep tab geometry independent of selected labels.
-struct MacReaderSidebarTabs: NSViewRepresentable {
-    let labels: [String]
-    @Binding var selection: Int
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeNSView(context: Context) -> NSSegmentedControl {
-        let control = NSSegmentedControl(labels: labels, trackingMode: .selectOne,
-                                         target: context.coordinator, action: #selector(Coordinator.select(_:)))
-        control.segmentDistribution = .fill
-        control.setAccessibilityLabel("Reader sidebar")
-        return control
-    }
-    func updateNSView(_ control: NSSegmentedControl, context: Context) {
-        context.coordinator.parent = self
-        control.segmentCount = labels.count
-        for (index, label) in labels.enumerated() {
-            control.setLabel(label, forSegment: index)
-            control.setWidth(268 / CGFloat(labels.count), forSegment: index)
-        }
-        control.selectedSegment = selection
-    }
-    final class Coordinator: NSObject {
-        var parent: MacReaderSidebarTabs
-        init(_ parent: MacReaderSidebarTabs) { self.parent = parent }
-        @objc func select(_ sender: NSSegmentedControl) { parent.selection = sender.selectedSegment }
-    }
-}
-
 /// Native search editing owns first responder once the field is mounted in its window.
 /// Updates refresh bindings/actions without taking focus back from the reader or results.
 struct MacReaderSearchField: NSViewRepresentable {
@@ -186,13 +158,21 @@ struct MacReaderSearchField: NSViewRepresentable {
 #if os(macOS)
 struct MacReaderInput: NSViewRepresentable {
     var chromeVisible: Bool
+    var paper: Color
+    var inspectorVisible: Bool
     var canTurn: () -> Bool
     var turn: (String) -> Void
     var trackpad: (([String: Any]) -> Void)? = nil
-    func makeNSView(context: Context) -> MacReaderInputRegion { MacReaderInputRegion() }
-    func updateNSView(_ view: MacReaderInputRegion, context: Context) {
+    func makeNSView(context: Context) -> MacReaderInputRegion {
+        let view = MacReaderInputRegion()
+        configure(view)
+        return view
+    }
+    func updateNSView(_ view: MacReaderInputRegion, context: Context) { configure(view) }
+    private func configure(_ view: MacReaderInputRegion) {
         view.canTurnPage = canTurn; view.turnPage = turn; view.trackpadPage = trackpad
-        view.chromeVisible = chromeVisible; view.updateChrome()
+        view.chromeVisible = chromeVisible; view.paperColor = NSColor(paper).usingColorSpace(.sRGB) ?? NSColor(paper)
+        view.inspectorVisible = inspectorVisible; view.updateChrome()
     }
     static func dismantleNSView(_ view: MacReaderInputRegion, coordinator: ()) { view.removeMonitor() }
 }
@@ -205,28 +185,56 @@ struct MacReaderInput: NSViewRepresentable {
     var turnPage: ((String) -> Void)?
     var trackpadPage: (([String: Any]) -> Void)?
     var chromeVisible = true
-    func updateChrome() {
+    var paperColor: NSColor = .white
+    var inspectorVisible = false
+    private weak var styledWindow: NSWindow?
+    private var styledChrome: Bool?
+    private var styledInspector: Bool?
+    private var styledPaper: NSColor?
+    func updateChrome(force: Bool = false) {
         guard let window else { return }
-        window.titleVisibility = chromeVisible ? .visible : .hidden
-        window.titlebarAppearsTransparent = !chromeVisible
+        guard force || styledWindow !== window || styledChrome != chromeVisible ||
+              styledInspector != inspectorVisible || styledPaper != paperColor else { return }
+        // Cache logical inputs before touching AppKit. Window style setters
+        // invalidate SwiftUI layout, which must not write the same style again.
+        styledWindow = window; styledChrome = chromeVisible
+        styledInspector = inspectorVisible; styledPaper = paperColor
+        let visibility: NSWindow.TitleVisibility = chromeVisible ? .visible : .hidden
+        if window.titleVisibility != visibility { window.titleVisibility = visibility }
+        // A visible native title bar must expose the reader's own paper too.
+        // Inspector/focus changes can otherwise restore the system light fill.
+        if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
+        if window.backgroundColor != paperColor { window.backgroundColor = paperColor }
         for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            window.standardWindowButton(button)?.isHidden = !chromeVisible
+            if let control = window.standardWindowButton(button), control.isHidden == chromeVisible {
+                control.isHidden = !chromeVisible
+            }
         }
     }
     private var inputMonitor: Any?
+    private var resignKeyObserver: NSObjectProtocol?
+    private var becomeKeyObserver: NSObjectProtocol?
     private var trackpadGesture = ReaderTrackpadGesture()
     private var trackpadInteraction = ReaderTrackpadInteraction()
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         removeMonitor()
-        guard window != nil else { return }
+        guard let window else { return }
         updateChrome()
+        resignKeyObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+                                                                    object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.cancelInput(); self?.updateChrome(force: true) }
+        }
+        becomeKeyObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
+                                                                   object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateChrome(force: true) }
+        }
         inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { [weak self] event in
             MainActor.assumeIsolated { self?.handle(event) ?? event }
         }
     }
     private func handle(_ event: NSEvent) -> NSEvent? {
-        guard let window, event.window === window, window.isKeyWindow, canTurnPage?() == true else { trackpadGesture.reset(); trackpadInteraction.reset(); return event }
+        guard let window, event.window === window, window.isKeyWindow, canTurnPage?() == true else { cancelInput(); return event }
         if event.type == .keyDown {
             guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
                   event.keyCode == 123 || event.keyCode == 124 else { return event }
@@ -237,7 +245,7 @@ struct MacReaderInput: NSViewRepresentable {
         }
         let point = convert(event.locationInWindow, from: nil)
         guard visibleRect.contains(point), event.hasPreciseScrollingDeltas,
-              event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { trackpadGesture.reset(); trackpadInteraction.reset(); return event }
+              event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { cancelInput(); return event }
         let phase: ReaderTrackpadGesture.Phase
         if !event.momentumPhase.isEmpty { phase = .momentum }
         else if event.phase.contains(.began) { phase = .began }
@@ -260,10 +268,23 @@ struct MacReaderInput: NSViewRepresentable {
         if let direction = result.direction { turnPage?(direction) }
         return result.consume ? nil : event
     }
+    private func cancelInput() {
+        if let update = trackpadInteraction.cancel() {
+            trackpadPage?(["phase": update.phase, "translation": update.translation,
+                           "velocity": update.velocity, "commit": update.commit])
+        }
+        trackpadGesture.reset(); trackpadInteraction.reset()
+    }
     func removeMonitor() {
         if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
-        inputMonitor = nil; trackpadGesture.reset(); trackpadInteraction.reset()
+        if let resignKeyObserver { NotificationCenter.default.removeObserver(resignKeyObserver) }
+        if let becomeKeyObserver { NotificationCenter.default.removeObserver(becomeKeyObserver) }
+        inputMonitor = nil; resignKeyObserver = nil; becomeKeyObserver = nil; cancelInput()
     }
-    deinit { if let inputMonitor { NSEvent.removeMonitor(inputMonitor) } }
+    deinit {
+        if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
+        if let resignKeyObserver { NotificationCenter.default.removeObserver(resignKeyObserver) }
+        if let becomeKeyObserver { NotificationCenter.default.removeObserver(becomeKeyObserver) }
+    }
 }
 #endif

@@ -35,6 +35,13 @@ struct ReaderTrackpadInteraction {
     private var horizontal = false, vertical = false, started = false, ended = false
     private var direction = 0.0
     mutating func reset() { self = Self() }
+    /// A stroke that leaves its input region must also release the provisional
+    /// page, even when AppKit sends no further event to that region.
+    mutating func cancel() -> Update? {
+        guard horizontal, started, !ended else { return nil }
+        ended = true
+        return Update(phase: "end", translation: 0, velocity: 0, commit: false)
+    }
     mutating func update(x dx: Double, y dy: Double, timestamp: Double, width: Double,
                          phase: ReaderTrackpadGesture.Phase) -> (consume: Bool, update: Update?) {
         if phase == .began { reset() }

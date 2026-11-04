@@ -1,6 +1,6 @@
 # ADR 0002 Source identity and capabilities
 
-Status: Accepted. Date: 2026-10-08. Implementation: existing Jellyfin isolation; multi-source expansion planned.
+Status: Partially superseded by [ADR 0006](0006-icloud-and-user-book-folder.md) for local-only imported data. Date: 2026-10-08. Existing Jellyfin isolation remains; multi-source expansion is planned.
 
 ## Context
 

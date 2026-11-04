@@ -33,6 +33,16 @@ import Foundation
         assert(interaction.update(x: 0, y: 0, timestamp: 2.54, width: 600, phase: .ended).update?.commit == true)
         assert(interaction.update(x: 1, y: 20, timestamp: 3, width: 600, phase: .began).consume == false)
         assert(interaction.update(x: 100, y: 0, timestamp: 3.1, width: 600, phase: .changed).consume == false)
-        print("PASS: discrete and finger-driven strokes, displacement, reversal, release/flick commit, momentum suppression and vertical passthrough")
+        assert(interaction.cancel() == nil, "Vertical scrolling must not create a page cancellation")
+        assert(interaction.update(x: -12, y: 0, timestamp: 4, width: 600, phase: .began).update?.phase == "begin")
+        let abandoned = interaction.cancel()
+        assert(abandoned?.phase == "end" && abandoned?.commit == false && abandoned?.translation == 0,
+               "An abandoned preview must explicitly cancel, not leave the renderer on a provisional page")
+        assert(interaction.cancel() == nil, "Cancellation must be emitted once")
+        assert(interaction.update(x: -30, y: 0, timestamp: 4.1, width: 600, phase: .changed).update == nil)
+        assert(interaction.update(x: -12, y: 0, timestamp: 5, width: 600, phase: .began).update?.phase == "begin")
+        assert(interaction.update(x: -80, y: 0, timestamp: 5.1, width: 600, phase: .ended).update?.commit == true)
+        assert(interaction.cancel() == nil, "A completed turn must not be cancelled afterward")
+        print("PASS: discrete and finger-driven strokes, displacement, reversal, release/flick commit, cancellation, momentum suppression and vertical passthrough")
     }
 }

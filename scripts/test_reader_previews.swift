@@ -90,18 +90,40 @@ import WebKit
                     let nextCFI = try await web.callAsyncJavaScript("await window.readerCommand({name:'nativeTurn',value:{direction:'next',request:'actual-next'}}); return (await rendition.currentLocation()).start.cfi;", arguments: [:], in: nil, contentWorld: .page) as? String
                     guard nextCFI == neighbourCFIs["next"] else { throw NSError(domain:"Preview does not match actual next page",code:1) }
                     phase = "executing five rapid turns"
-                    _ = try await web.callAsyncJavaScript("""
+                    let rapid = try await web.callAsyncJavaScript("""
                     await window.readerCommand({name:'layoutPage',value:3});
-                    await Promise.all(Array.from({length:5},(_,i)=>window.readerCommand({name:'nativeTurn',value:{direction:'next',request:'burst-'+i}})));
-                    if((await rendition.currentLocation()).start.displayed.page!==8) throw Error('Rapid turns dropped or doubled');
-                    await window.readerCommand({name:'layoutPage',value:1});
-                    """, arguments: [:], in: nil, contentWorld: .page)
+                    const start = paginationPosition(await rendition.currentLocation()).bookPage;
+                    const seen = [];
+                    await Promise.all(Array.from({length:5},(_,i)=>window.readerCommand({name:'nativeTurn',value:{direction:'next',request:'burst-'+i}}).then(async()=>{ seen[i] = paginationPosition(await rendition.currentLocation()).bookPage; })));
+                    return {start, seen, final:paginationPosition(await rendition.currentLocation()).bookPage};
+                    """, arguments: [:], in: nil, contentWorld: .page) as? [String:Any]
+                    guard let rapid, let start = rapid["start"] as? Int, let seen = rapid["seen"] as? [Int], let final = rapid["final"] as? Int else { throw NSError(domain:"Rapid turn results unavailable",code:1) }
+                    print("Rapid pages: start=\(start) completions=\(seen) final=\(final)")
+                    guard start > 0, seen == (1...5).map({ start + $0 }), final == start + 5 else { throw NSError(domain:"Rapid turns dropped, doubled or reordered",code:1) }
+                    _ = try await web.callAsyncJavaScript("await window.readerCommand({name:'layoutPage',value:0});", arguments:[:], in:nil, contentWorld:.page)
                     guard let first = try await web.evaluateJavaScript("window.readerSnapshotOrigin()") as? [String:Any] else { throw NSError(domain:"First page origin",code:1) }
                     let boundary: [String:Any] = ["url":"appbook://local/publication/OPS/package.opf","origin":first,"preferences":settings,"direction":"previous","request":"boundary"]
                     _ = try await preview.callAsyncJavaScript("await window.readerCommand({name:'snapshot',value});", arguments: ["value":boundary], in: nil, contentWorld: .page)
                     try await Task.sleep(for: .milliseconds(100))
-                    guard snapshotMessages.last?["request"] as? String == "boundary", snapshotMessages.last?["exists"] as? Bool == false else { throw NSError(domain:"False previous page at book start",code:1) }
-                    let result = "Real adjacent previews match committed pages; peeking preserves position; five rapid turns and book-start boundary pass"
+                    guard snapshotMessages.last?["request"] as? String == "boundary", snapshotMessages.last?["exists"] as? Bool == false,
+                          snapshotMessages.last?["boundary"] as? Bool == true else { throw NSError(domain:"False previous page at book start",code:1) }
+                    phase = "checking both sides of the spine boundary"
+                    guard let split = try await web.evaluateJavaScript("layoutPages.findIndex((p,i)=>i>0 && p.href!==layoutPages[i-1].href)") as? Int, split > 0 else { throw NSError(domain:"Spine boundary missing",code:1) }
+                    for (index, direction) in [(split - 1, "next"), (split, "previous")] {
+                        _ = try await web.callAsyncJavaScript("await window.readerCommand({name:'layoutPage',value:index}); await new Promise(r=>setTimeout(r,200));", arguments:["index":index], in:nil, contentWorld:.page)
+                        guard let edge = try await web.evaluateJavaScript("window.readerSnapshotOrigin()") as? [String:Any] else { throw NSError(domain:"Spine edge origin",code:1) }
+                        let request = "spine-\(direction)"
+                        let query: [String:Any] = ["url":"appbook://local/publication/OPS/package.opf","origin":edge,"preferences":settings,"direction":direction,"request":request]
+                        _ = try await preview.callAsyncJavaScript("await window.readerCommand({name:'snapshot',value});", arguments:["value":query], in:nil, contentWorld:.page)
+                        try await Task.sleep(for: .milliseconds(100))
+                        guard let result = snapshotMessages.last, result["request"] as? String == request,
+                              result["boundary"] as? Bool == false else { throw NSError(domain:"Interior spine marked as book boundary",code:1) }
+                        print("Spine preview \(direction): image available=\(result["exists"] as? Bool == true), proven boundary=false")
+                        let live = try await web.callAsyncJavaScript("await window.readerCommand({name:'nativeTurn',value:{direction:direction,request:'spine-live'}}); return (await rendition.currentLocation()).start.cfi;", arguments:["direction":direction], in:nil, contentWorld:.page) as? String
+                        guard let live, live != edge["cfi"] as? String else { throw NSError(domain:"Live spine navigation did not move",code:1) }
+                        if result["exists"] as? Bool == true, live != result["cfi"] as? String { throw NSError(domain:"Spine preview did not match live navigation",code:1) }
+                    }
+                    let result = "Adjacent previews, both spine edges, rapid turns and proven book-start boundary pass"
                     finish(true, result)
                 } catch {
                     let detail = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String ?? "JavaScript check failed"

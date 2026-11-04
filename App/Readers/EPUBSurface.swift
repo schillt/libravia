@@ -33,7 +33,32 @@ struct EPUBSurface: EPUBViewRepresentable {
         config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(BookScheme(directory: prepared.directory), forURLScheme: "appbook")
         config.userContentController.add(coordinator, name: "reader")
+        #if os(macOS)
+        let web = ReaderMenuWebView(frame: .zero, configuration: config)
+        web.readerController = controller
+        web.underPageBackgroundColor = Self.paperColor(preferences.theme)
+        coordinator.reflowBridge = MacReflowBridge(web: web, softeningChanged: { [weak controller = coordinator.controller] active, animated in
+            guard let controller, controller.reflowSoftening != active else { return }
+            if animated {
+                withAnimation(.easeOut(duration: 0.16)) { controller.reflowSoftening = active }
+            } else {
+                var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
+                withTransaction(transaction) { controller.reflowSoftening = active }
+            }
+        }, coverageChanged: { [weak coordinator] active in
+            guard let coordinator else { return }
+            // A complete frozen page covers the expanding strip too. Keep the
+            // paper fallback available if input interrupts that coverage early.
+            if !active, coordinator.reflowBridge?.cachedSize == coordinator.web?.bounds.size {
+                coordinator.stopSidebarPaper()
+            }
+            coordinator.controller.reflowCovering = active
+        })
+        web.reflowGeometryWillChange = { [weak coordinator] in coordinator?.reflowBridge?.geometryWillChange() }
+        web.reflowInteraction = { [weak coordinator] in coordinator?.reflowBridge?.invalidate() }
+        #else
         let web = WKWebView(frame: .zero, configuration: config)
+        #endif
         web.navigationDelegate = coordinator; coordinator.web = web
         #if os(macOS)
         let click = NSClickGestureRecognizer(target: coordinator, action: #selector(Coordinator.readerClick(_:)))
@@ -54,15 +79,36 @@ struct EPUBSurface: EPUBViewRepresentable {
         web.scrollView.panGestureRecognizer.require(toFail: pan)
         web.scrollView.isScrollEnabled = false
         coordinator.pagePan = pan
+        coordinator.pageTap = tap
+        tap.require(toFail: pan)
         #endif
         web.load(URLRequest(url: URL(string: "appbook://local/reader/index.html")!))
         controller.command = { [weak coordinator] name, value in coordinator?.send(name, value) }
         return web
     }
     #if os(macOS)
+    private static func paperColor(_ theme: String) -> NSColor {
+        switch theme {
+        case "dark": return NSColor(srgbRed: 23.0 / 255, green: 23.0 / 255, blue: 23.0 / 255, alpha: 1)
+        case "sepia": return NSColor(srgbRed: 244.0 / 255, green: 236.0 / 255, blue: 216.0 / 255, alpha: 1)
+        default: return .white
+        }
+    }
     func makeNSView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
-    func updateNSView(_ web: WKWebView, context: Context) { context.coordinator.pageChrome(chrome); context.coordinator.preferences(preferences) }
-    static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) { web.configuration.userContentController.removeScriptMessageHandler(forName: "reader"); coordinator.stopMacTrackpad(); coordinator.controller.command = nil }
+    func updateNSView(_ web: WKWebView, context: Context) {
+        web.underPageBackgroundColor = Self.paperColor(preferences.theme)
+        context.coordinator.pageChrome(chrome); context.coordinator.preferences(preferences)
+        context.coordinator.updateHighlighter(controller.highlighterColor)
+    }
+    static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) {
+        coordinator.updateHighlighter(nil)
+        coordinator.stopSidebarPaper()
+        coordinator.reflowBridge?.stop()
+        (web as? ReaderMenuWebView)?.reflowGeometryWillChange = nil
+        (web as? ReaderMenuWebView)?.reflowInteraction = nil
+        web.configuration.userContentController.removeScriptMessageHandler(forName: "reader")
+        coordinator.stopMacTrackpad(); coordinator.controller.command = nil
+    }
     #else
     func makeUIViewController(context: Context) -> ReaderHostController {
         let web = makeWebView(context.coordinator)
@@ -84,7 +130,129 @@ struct EPUBSurface: EPUBViewRepresentable {
         var latestPreferences = ReaderPreferences()
         var latestChrome = ReaderPageChrome()
         var loaded = false
+        private var highlightPayload: [Any] = []
         #if os(macOS)
+        fileprivate var reflowBridge: MacReflowBridge?
+        private var sidebarPaperRequest: String?
+        private var sidebarPaperLive = false
+        private var sidebarPaperEnded = false
+        private var sidebarPaintGeneration = UUID()
+        private var sidebarPaperRecovery: DispatchWorkItem?
+        private func beginSidebarPaper(_ request: String, live: Bool) {
+            guard UUID(uuidString: request) != nil, let web else { return }
+            sidebarPaperRecovery?.cancel()
+            sidebarPaperRequest = request
+            sidebarPaperLive = live; sidebarPaperEnded = false; sidebarPaintGeneration = UUID()
+            controller.sidebarPaperWidth = min(controller.sidebarPaperWidth ?? Double(web.bounds.width), Double(web.bounds.width))
+            let recovery = DispatchWorkItem { [weak self] in
+                guard self?.sidebarPaperRequest == request else { return }
+                self?.stopSidebarPaper()
+            }
+            sidebarPaperRecovery = recovery
+            // Recovery only; renderer paint acknowledgement normally releases it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: recovery)
+        }
+        fileprivate func stopSidebarPaper() {
+            sidebarPaperRecovery?.cancel(); sidebarPaperRecovery = nil
+            sidebarPaperRequest = nil; sidebarPaperLive = false; sidebarPaperEnded = false
+            sidebarPaintGeneration = UUID()
+            controller.sidebarPaperWidth = nil
+        }
+        private func finishSidebarPaper(request: String, width: Double, settled: Bool) {
+            guard request == sidebarPaperRequest, width.isFinite, width > 0, let web else { return }
+            let matchesViewport = abs(Double(web.bounds.width) - width) < 2
+            guard sidebarPaperLive || (matchesViewport && settled) else { return }
+            guard let heldWidth = controller.sidebarPaperWidth else { return }
+            if !sidebarPaperLive && width <= heldWidth { stopSidebarPaper(); return }
+            let generation = UUID(); sidebarPaintGeneration = generation
+            // Live layout can be behind the latest native geometry. Advance the
+            // paper edge only to the width actually painted, never stretch text.
+            let edge = min(CGFloat(width), web.bounds.width)
+            guard edge > 0 else { return }
+            let snapshot = WKSnapshotConfiguration()
+            snapshot.rect = CGRect(x: max(0, edge - 2), y: 0, width: 1, height: 1)
+            snapshot.snapshotWidth = 1
+            snapshot.afterScreenUpdates = true
+            web.takeSnapshot(with: snapshot) { [weak self, weak web] _, error in
+                guard let self, let web, error == nil, request == self.sidebarPaperRequest,
+                      generation == self.sidebarPaintGeneration else { return }
+                let matches = abs(Double(web.bounds.width) - width) < 2
+                if self.sidebarPaperLive {
+                    self.controller.sidebarPaperWidth = min(width, Double(web.bounds.width))
+                    guard self.sidebarPaperEnded && matches && settled else { return }
+                } else if !matches { return }
+                self.stopSidebarPaper()
+            }
+        }
+        private var highlighterMonitor: Any?
+        private var highlighterColor: String?
+        private var highlighterGeneration = UUID()
+        private var highlighterStart: (window: NSWindow, point: NSPoint, color: String, clickCount: Int, dragged: Bool)?
+        fileprivate func updateHighlighter(_ color: String?) {
+            guard color != highlighterColor else { return }
+            highlighterColor = color; highlighterGeneration = UUID(); highlighterStart = nil
+            if let highlighterMonitor { NSEvent.removeMonitor(highlighterMonitor); self.highlighterMonitor = nil }
+            if let web { web.window?.invalidateCursorRects(for: web) }
+            guard color != nil else { return }
+            highlighterMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .keyDown]) { [weak self] event in
+                if self?.handleHighlighterEscape(event) == true { return nil }
+                self?.observeHighlighter(event)
+                return event
+            }
+        }
+        private func handleHighlighterEscape(_ event: NSEvent) -> Bool {
+            guard event.type == .keyDown, event.keyCode == 53,
+                  event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                  controller.highlighterColor != nil, let window = web?.window,
+                  event.window === window, window.isKeyWindow, window.attachedSheet == nil else { return false }
+            // A toolbar's native responder does not necessarily forward
+            // cancelOperation to WebKit. Scope Escape to this armed reader;
+            // popovers and editor sheets keep their own cancellation behavior.
+            controller.highlighterColor = nil
+            highlighterStart = nil
+            return true
+        }
+        private func highlighterContains(_ event: NSEvent, web: WKWebView) -> Bool {
+            guard let window = web.window, event.window === window, let content = window.contentView,
+                  web.bounds.contains(web.convert(event.locationInWindow, from: nil)),
+                  let parent = content.superview,
+                  let hit = content.hitTest(parent.convert(event.locationInWindow, from: nil)),
+                  hit === web || hit.isDescendant(of: web) else { return false }
+            var view: NSView? = hit
+            while let current = view, current !== web {
+                if current is NSScroller { return false }
+                view = current.superview
+            }
+            return true
+        }
+        private func observeHighlighter(_ event: NSEvent) {
+            guard let web, let color = highlighterColor else { highlighterStart = nil; return }
+            switch event.type {
+            case .leftMouseDown:
+                if let window = web.window, highlighterContains(event, web: web) {
+                    highlighterStart = (window, event.locationInWindow, color, event.clickCount, false)
+                } else { highlighterStart = nil }
+            case .leftMouseDragged:
+                guard var start = highlighterStart, event.window === start.window else { return }
+                let point = event.locationInWindow
+                if hypot(point.x - start.point.x, point.y - start.point.y) >= 3 { start.dragged = true }
+                highlighterStart = start
+            case .leftMouseUp:
+                guard let start = highlighterStart else { return }
+                highlighterStart = nil
+                guard event.window === start.window, start.color == color, (start.dragged || start.clickCount >= 2),
+                      highlighterContains(event, web: web) else { return }
+                // A local monitor runs before WebKit receives mouse-up. Defer to
+                // the next main-loop turn so its final native selection is ready.
+                let generation = highlighterGeneration
+                DispatchQueue.main.async { [weak self, weak web] in
+                    guard let self, let web, self.highlighterGeneration == generation,
+                          self.highlighterColor == color, web.window === start.window else { return }
+                    self.sendRaw("commitHighlightSelection", ["request": generation.uuidString])
+                }
+            default: break
+            }
+        }
         private final class MacTrackpadTurn {
             let id = UUID()
             let direction: String
@@ -178,9 +346,10 @@ struct EPUBSurface: EPUBViewRepresentable {
         private var textSelectionActive = false
         func viewportDidChange() {
             let interruptedCurl = curlTurning
-            abortInteractive()
+            interruptDecoration()
             if interruptedCurl { resetCurl() }
-            invalidateSnapshots(); cachedPage = nil; cacheRequest = UUID()
+            invalidateSnapshots(); cachedPage = nil; captureState.invalidate()
+            finishCardIfReady(); drainTurns()
         }
         func cachedAdjacentPage(_ direction: String) -> UIImage? {
             guard cachedPage != nil, cachedPageCFI == controller.position.cfi, cachedPageSize == web?.bounds.size,
@@ -192,13 +361,25 @@ struct EPUBSurface: EPUBViewRepresentable {
             return latestChrome.enabled ? CGRect(x: 0, y: latestChrome.top, width: web.bounds.width,
                 height: max(0, web.bounds.height - latestChrome.top - latestChrome.bottom)) : web.bounds
         }
+        func canCatchUpCurl(at point: CGPoint) -> Bool {
+            guard controller.ready, !searchPresented, !latestPreferences.scrolling, !textSelectionActive,
+                  let web, web.bounds.contains(point), contentBounds.contains(point) else { return false }
+            return true
+        }
         func canCurl(at point: CGPoint) -> Bool {
-            guard controller.ready, !searchPresented, !curlTurning, turnToken == nil, pendingCard == nil, !textSelectionActive, let web,
+            guard canCatchUpCurl(at: point), !curlTurning, turnToken == nil, pendingCard == nil,
                   !curlBlockedRegions.contains(where: { $0.contains(point) }) else { return false }
-            guard web.bounds.contains(point) else { return false }
-            return cachedAdjacentPage("previous") != nil || cachedAdjacentPage("next") != nil
+            // Until both directions are known, a gesture toward the uncached
+            // side would otherwise be rejected before reaching the queue.
+            return ["previous", "next"].allSatisfy { cachedAdjacentPage($0) != nil || unavailablePages.contains($0) }
         }
         func resumeQueuedTurns() { drainTurns() }
+        var curlInputBusy: Bool { curlTurning || turnToken != nil || !queuedTurns.isEmpty }
+        func queueCurlCatchUp(_ direction: String, start: CGPoint) {
+            guard let web, controller.ready, !latestPreferences.scrolling, !searchPresented,
+                  !textSelectionActive, contentBounds.contains(start) else { return }
+            queueGuardedTurn(direction, start: start, web: web)
+        }
         private func resetCurl() {
             curlCompletion = nil; curlToken = nil; curlTurning = false
             hostController?.resetCurlSurface()
@@ -208,19 +389,21 @@ struct EPUBSurface: EPUBViewRepresentable {
             abortInteractive(); resetCurl()
             outgoingPage?.removeFromSuperview(); outgoingPage = nil; turnToken = nil
             invalidateSnapshots(); cachedPage = nil
-            controller.error = "The page turn could not finish. Close this book and reopen it to continue."
+            controller.error = "The page turn could not finish. Queued page turns have been stopped. Close this book and reopen it before continuing."
         }
         func commitCurl(_ direction: String, completion: @escaping () -> Void) {
             let token = UUID(); curlToken = token; curlCompletion = completion
             sendNativeTurn(direction, token: token)
         }
         weak var pagePan: UIPanGestureRecognizer?
+        weak var pageTap: UITapGestureRecognizer?
         private var panStart: CGPoint?
         private var turnToken: UUID?
         private var outgoingPage: UIImageView?
         private var settlingPage: UIImageView?
         private final class InteractiveSwipe {
             let start: CGPoint
+            let originCFI: String?
             var translation: CGFloat = 0
             var velocity: CGFloat = 0
             var ended = false
@@ -230,6 +413,7 @@ struct EPUBSurface: EPUBViewRepresentable {
             var incoming: UIImageView?
             var direction: String?
             var incomingDirection: String?
+            var incomingSnapshotRequest: String?
             var readyTranslation: CGFloat = 0
             var dragBias: CGFloat = 0
             var animationDone = false
@@ -237,7 +421,8 @@ struct EPUBSurface: EPUBViewRepresentable {
             let turnID = UUID()
             var waitedForPreview = false
             var shouldCommit = false
-            init(start: CGPoint) { self.start = start }
+            var guardReservation: UUID?
+            init(start: CGPoint, originCFI: String?) { self.start = start; self.originCFI = originCFI }
         }
         private var interactiveSwipe: InteractiveSwipe?
 
@@ -245,7 +430,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         private var snapshotWeb: WKWebView?
         private var snapshotBooted = false
         private var snapshotBusyRequest: String?
-        private var currentCaptureInFlight: UUID?
+        private var captureState = ReaderPreviewCaptureState()
         private var currentCapturePending = false
         private var snapshotOrigin: [String: Any]?
         private var snapshotRequest: String?
@@ -255,7 +440,8 @@ struct EPUBSurface: EPUBViewRepresentable {
         private var unavailablePages: Set<String> = []
         private var pendingCard: InteractiveSwipe?
         private var cardAnimator: UIViewPropertyAnimator?
-        private var queuedTurns: [String] = []
+        private var queuedTurns = ReaderRapidTurnQueue()
+        private var interactionEpoch = UUID()
         private func invalidateSnapshots() {
             snapshotRequest = nil; snapshotKey = nil; snapshotDirections.removeAll()
             adjacentPages.removeAll(); unavailablePages.removeAll()
@@ -312,7 +498,7 @@ struct EPUBSurface: EPUBViewRepresentable {
             }
             let relative = String(prepared.document.path.dropFirst(prepared.directory.path.count + 1))
             var url = URLComponents(); url.scheme = "appbook"; url.host = "local"; url.path = "/publication/" + relative
-            let value: [String: Any] = ["url":url.url!.absoluteString,"origin":origin,"preferences":preferencesObject(),"direction":direction,"request":request]
+            let value: [String: Any] = ["url":url.url!.absoluteString,"origin":origin,"preferences":preferencesObject(),"direction":direction,"request":request,"highlights":highlightPayload]
             guard let data = try? JSONSerialization.data(withJSONObject: ["name":"snapshot","value":value]), let json = String(data:data,encoding:.utf8) else { return }
             snapshotWeb?.evaluateJavaScript("void window.readerCommand(\(json))")
         }
@@ -328,7 +514,10 @@ struct EPUBSurface: EPUBViewRepresentable {
             }
             if value["exists"] as? Bool != true {
                 snapshotBusyRequest = nil
-                unavailablePages.insert(direction); snapshotDirections.removeFirst(); captureAdjacentPage()
+                // An unchanged preview can be a not-yet-loaded interior page.
+                // Only a proven book edge may suppress a committed turn.
+                if value["boundary"] as? Bool == true { unavailablePages.insert(direction) }
+                snapshotDirections.removeFirst(); captureAdjacentPage()
                 if snapshotDirections.isEmpty { hostController?.refreshNeighbours() }
                 if let swipe = interactiveSwipe { updateInteractive(swipe) }
                 return
@@ -355,7 +544,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         }
         func stopSnapshots() {
             abortInteractive(); invalidateSnapshots(); releaseSnapshotRenderer()
-            cachedPage = nil; cacheRequest = UUID(); currentCapturePending = false
+            cachedPage = nil; captureState = ReaderPreviewCaptureState(); currentCapturePending = false
             curlCompletion = nil; curlToken = nil; curlTurning = false
         }
         func sourcePageImage() -> UIImage? { cachedPage }
@@ -364,12 +553,12 @@ struct EPUBSurface: EPUBViewRepresentable {
         private var cachedPageCFI: String?
         private var cachedPagePreferences: ReaderPreferences?
         private var cachedPageChrome: ReaderPageChrome?
-        private var cacheRequest = UUID()
         #endif
         init(prepared: PreparedBook, controller: ReaderController) { self.prepared = prepared; self.controller = controller }
         #if os(macOS)
         @objc func readerClick(_ gesture: NSClickGestureRecognizer) {
-            guard let web else { return }
+            reflowBridge?.invalidate()
+            guard controller.highlighterColor == nil, let web else { return }
             let point = gesture.location(in: web)
             // WebKit uses top-left document coordinates; NSView may be unflipped.
             let y = web.isFlipped ? point.y : web.bounds.height - point.y
@@ -379,6 +568,7 @@ struct EPUBSurface: EPUBViewRepresentable {
         #if os(iOS)
         @objc func readerTap(_ gesture: UITapGestureRecognizer) {
             let point = gesture.location(in: web)
+            guard !textSelectionActive, !controller.epubSelectionActive else { return }
             send("gesture", ["action": "tap", "x": point.x, "y": point.y])
         }
         @objc func readerPan(_ gesture: UIPanGestureRecognizer) {
@@ -389,13 +579,15 @@ struct EPUBSurface: EPUBViewRepresentable {
             }
             switch gesture.state {
             case .began:
+                finishSettlingForInput()
                 panStart = gesture.location(in: web)
             case .ended:
                 defer { panStart = nil }
                 guard let start = panStart, !latestPreferences.scrolling else { return }
                 let movement = gesture.translation(in: web)
-                guard abs(movement.x) > 60, abs(movement.x) > abs(movement.y) * 1.5 else { return }
-                send("gesture", ["action": movement.x < 0 ? "next" : "previous", "x": start.x, "y": start.y])
+                guard abs(movement.x) > abs(movement.y) * 1.5,
+                      ReaderTurnDecision.commits(translation: movement.x, velocity: gesture.velocity(in: web).x, width: web.bounds.width) else { return }
+                queueGuardedTurn(movement.x < 0 ? "next" : "previous", start: start, web: web)
             case .cancelled, .failed:
                 panStart = nil
             default: break
@@ -405,17 +597,24 @@ struct EPUBSurface: EPUBViewRepresentable {
             switch gesture.state {
             case .began:
                 finishSettlingForInput()
-                if turnToken != nil || pendingCard != nil { panStart = gesture.location(in: web); return }
+                if turnToken != nil || pendingCard != nil || interactiveSwipe != nil || !queuedTurns.isEmpty { panStart = gesture.location(in: web); return }
                 guard interactiveSwipe == nil else { return }
-                let swipe = InteractiveSwipe(start: gesture.location(in: web))
+                let swipe = InteractiveSwipe(start: gesture.location(in: web), originCFI: controller.position.cfi)
                 swipe.translation = gesture.translation(in: web).x
                 interactiveSwipe = swipe
                 warmAdjacentPages()
                 if cachedPageSize == web.bounds.size, cachedPageCFI == controller.position.cfi,
                    cachedPagePreferences == latestPreferences, cachedPageChrome == latestChrome { swipe.image = cachedPage }
                 let point = swipe.start
-                web.evaluateJavaScript("window.readerCanTurn(\(point.x),\(point.y))") { [weak self, weak swipe] result, _ in
-                    guard let self, let swipe, self.interactiveSwipe === swipe else { return }
+                let epoch = interactionEpoch
+                web.evaluateJavaScript("window.readerCanTurn(\(point.x),\(point.y))") { [weak self, swipe] result, error in
+                    guard let self, self.interactionEpoch == epoch else { return }
+                    if let reservation = swipe.guardReservation {
+                        if error != nil { self.controller.error = "The EPUB reader could not validate a page turn." }
+                        self.queuedTurns.resolve(reservation, allowed: result as? Bool ?? false)
+                        self.drainTurns(); return
+                    }
+                    guard self.interactiveSwipe === swipe else { return }
                     swipe.allowed = result as? Bool ?? false
                     if swipe.allowed == false { self.cancelInteractive(swipe, animated: true) }
                     else { self.updateInteractive(swipe) }
@@ -427,16 +626,16 @@ struct EPUBSurface: EPUBViewRepresentable {
                     }
                 }
             case .changed:
-                guard let swipe = interactiveSwipe else { return }
+                guard panStart == nil, let swipe = interactiveSwipe else { return }
                 swipe.translation = gesture.translation(in: web).x
                 swipe.velocity = gesture.velocity(in: web).x
                 updateInteractive(swipe)
             case .ended, .cancelled, .failed:
-                if panStart != nil {
+                if let start = panStart {
                     defer { panStart = nil }
                     let movement = gesture.translation(in: web).x, velocity = gesture.velocity(in: web).x
                     if gesture.state == .ended, ReaderTurnDecision.commits(translation: movement, velocity: velocity, width: web.bounds.width) {
-                        queueTurn(movement < 0 ? "next" : "previous")
+                        queueGuardedTurn(movement < 0 ? "next" : "previous", start: start, web: web)
                     }
                     return
                 }
@@ -444,6 +643,14 @@ struct EPUBSurface: EPUBViewRepresentable {
                 swipe.translation = gesture.translation(in: web).x
                 swipe.velocity = gesture.velocity(in: web).x; swipe.ended = true
                 swipe.shouldCommit = gesture.state == .ended && ReaderTurnDecision.commits(translation: swipe.translation, velocity: swipe.velocity, width: web.bounds.width)
+                if swipe.shouldCommit && swipe.allowed == nil {
+                    // Reserve this turn before later swipes can complete; the guard
+                    // callback decides whether its reservation is eligible.
+                    swipe.guardReservation = queuedTurns.reserve(swipe.translation < 0 ? "next" : "previous")
+                    swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview()
+                    interactiveSwipe = nil
+                    drainTurns(); return
+                }
                 updateInteractive(swipe)
             default: break
             }
@@ -462,17 +669,22 @@ struct EPUBSurface: EPUBViewRepresentable {
                 host.addSubview(outgoing); swipe.outgoing = outgoing
             }
             guard let outgoing = swipe.outgoing, let direction = swipe.direction else {
-                if swipe.ended { cancelInteractive(swipe, animated: true) }
+                if swipe.ended {
+                    if swipe.shouldCommit, let direction = swipe.direction, !unavailablePages.contains(direction) {
+                        completeInteractive(swipe)
+                    } else { cancelInteractive(swipe, animated: true) }
+                }
                 return
             }
             if swipe.incomingDirection != direction {
-                swipe.incoming?.removeFromSuperview(); swipe.incoming = nil; swipe.incomingDirection = direction
+                swipe.incoming?.removeFromSuperview(); swipe.incoming = nil; swipe.incomingDirection = direction; swipe.incomingSnapshotRequest = nil
             }
             if swipe.incoming == nil, let image = adjacentPages[direction] {
                 let incoming = UIImageView(image: image)
                 incoming.frame = host.bounds; incoming.contentMode = .scaleToFill
                 incoming.isUserInteractionEnabled = false; incoming.autoresizingMask = [.flexibleWidth, .flexibleHeight]
                 host.insertSubview(incoming, belowSubview: outgoing); swipe.incoming = incoming
+                swipe.incomingSnapshotRequest = snapshotRequest
                 // Keep a cold drag continuous when its genuine preview arrives.
                 swipe.dragBias = swipe.waitedForPreview ? swipe.translation - outgoing.transform.tx : 0
                 swipe.readyTranslation = swipe.waitedForPreview ? swipe.translation : 0
@@ -519,39 +731,89 @@ struct EPUBSurface: EPUBViewRepresentable {
         private func finishCardIfReady() {
             guard let swipe = pendingCard, swipe.mainReady, swipe.animationDone else { return }
             pendingCard = nil; interactiveFinishing = false; cardAnimator = nil
+            // A completed interactive preview is an honest image of the page
+            // just reached. Reuse it only after the live renderer confirms a
+            // different location; layout changes cancel the interactive swipe.
+            if let image = swipe.incoming?.image, let web, let cfi = controller.position.cfi,
+               let origin = swipe.originCFI, cfi != origin,
+               let request = swipe.incomingSnapshotRequest, snapshotRequest == request {
+                cachedPage = image; cachedPageCFI = cfi; cachedPageSize = web.bounds.size
+                cachedPagePreferences = latestPreferences; cachedPageChrome = latestChrome
+            }
             swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview()
             cacheCurrentPage(); drainTurns()
         }
         private func finishSettlingForInput() {
-            settlingPage?.layer.removeAllAnimations(); settlingPage?.removeFromSuperview(); settlingPage = nil
+            if let settling = settlingPage {
+                settlingPage = nil; settling.layer.removeAllAnimations(); settling.removeFromSuperview()
+                queuedTurns.endSettling()
+                drainTurns()
+                return
+            }
             if let swipe = pendingCard {
                 cardAnimator?.stopAnimation(true); cardAnimator = nil
                 if swipe.incoming != nil { swipe.outgoing?.removeFromSuperview() }
                 swipe.animationDone = true; finishCardIfReady()
             } else if turnToken != nil { outgoingPage?.removeFromSuperview(); outgoingPage = nil }
         }
+        private func queueGuardedTurn(_ direction: String, start: CGPoint, web: WKWebView) {
+            let reservation = queuedTurns.reserve(direction), epoch = interactionEpoch
+            web.evaluateJavaScript("window.readerCanTurn(\(start.x),\(start.y))") { [weak self] result, error in
+                guard let self, self.interactionEpoch == epoch else { return }
+                if error != nil { self.controller.error = "The EPUB reader could not validate a page turn." }
+                self.queuedTurns.resolve(reservation, allowed: result as? Bool ?? false)
+                self.drainTurns()
+            }
+            drainTurns()
+        }
         private func queueTurn(_ direction: String) {
             finishSettlingForInput()
             queuedTurns.append(direction); drainTurns()
         }
         private func drainTurns() {
-            guard turnToken == nil, pendingCard == nil, !curlTurning, interactiveSwipe == nil, !queuedTurns.isEmpty else { return }
-            let direction = queuedTurns.removeFirst()
-            // The renderer serializes actual changes. Rapid input skips the
-            // decorative settling animation rather than dropping page turns.
-            let token = UUID(); turnToken = token; sendNativeTurn(direction, token: token)
+            defer { hostController?.scheduleCurlInputOwnershipUpdate() }
+            guard turnToken == nil, pendingCard == nil, settlingPage == nil, !curlTurning, interactiveSwipe == nil,
+                  queuedTurns.hasReady else { return }
+            guard let direction = queuedTurns.takeNext() else { return }
+            let token = UUID(); turnToken = token
+            if ["slide", "fade"].contains(latestPreferences.pageTransition), !UIAccessibility.isReduceMotionEnabled, let web,
+               cachedPageCFI == controller.position.cfi, cachedPageSize == web.bounds.size,
+               cachedPagePreferences == latestPreferences, cachedPageChrome == latestChrome, let image = cachedPage {
+                let outgoing = UIImageView(image: image)
+                outgoing.frame = web.bounds; outgoing.contentMode = .scaleToFill
+                outgoing.isUserInteractionEnabled = false
+                outgoing.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                (host ?? web).addSubview(outgoing); outgoingPage = outgoing
+            }
+            // Never wait for or invent an adjacent image during a rapid queue.
+            sendNativeTurn(direction, token: token)
         }
         private func cancelInteractive(_ swipe: InteractiveSwipe, animated: Bool) {
             guard interactiveSwipe === swipe else { return }
             interactiveSwipe = nil
             guard animated, let outgoing = swipe.outgoing else {
-                swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview(); return
+                swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview(); drainTurns(); return
             }
             let animator = UIViewPropertyAnimator(duration: 0.16, dampingRatio: 0.95) { outgoing.transform = .identity }
-            animator.addCompletion { _ in outgoing.removeFromSuperview(); swipe.incoming?.removeFromSuperview() }
+            animator.addCompletion { [weak self] _ in outgoing.removeFromSuperview(); swipe.incoming?.removeFromSuperview(); self?.drainTurns() }
             animator.startAnimation()
         }
+        // Layout invalidates preview images, not already accepted navigation.
+        // Keep the in-flight token so its eventual acknowledgement is processed.
+        private func interruptDecoration() {
+            cardAnimator?.stopAnimation(true); cardAnimator = nil
+            interactiveSwipe?.outgoing?.removeFromSuperview(); interactiveSwipe?.incoming?.removeFromSuperview()
+            interactiveSwipe = nil
+            if let swipe = pendingCard {
+                swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview()
+                swipe.outgoing = nil; swipe.incoming = nil; swipe.animationDone = true
+            }
+            outgoingPage?.removeFromSuperview(); outgoingPage = nil
+            settlingPage?.layer.removeAllAnimations(); settlingPage?.removeFromSuperview(); settlingPage = nil
+            queuedTurns.interruptDecoration()
+        }
         private func abortInteractive() {
+            interactionEpoch = UUID()
             cardAnimator?.stopAnimation(true); cardAnimator = nil
             for swipe in [interactiveSwipe, pendingCard].compactMap({ $0 }) {
                 swipe.outgoing?.removeFromSuperview(); swipe.incoming?.removeFromSuperview()
@@ -560,31 +822,36 @@ struct EPUBSurface: EPUBViewRepresentable {
         }
         private func cacheCurrentPage() {
             guard controller.ready, !searchPresented, !latestPreferences.scrolling,
-                  ["slide", "curl"].contains(latestPreferences.pageTransition), !UIAccessibility.isReduceMotionEnabled,
+                  ["slide", "curl", "fade"].contains(latestPreferences.pageTransition), !UIAccessibility.isReduceMotionEnabled,
                   interactiveSwipe == nil, !interactiveFinishing, !curlTurning, turnToken == nil,
                   let web, let cfi = controller.position.cfi, web.bounds.width > 0 else { return }
             let size = web.bounds.size, preferences = latestPreferences, chrome = latestChrome
             if cachedPage != nil, cachedPageCFI == cfi, cachedPageSize == size, cachedPagePreferences == preferences, cachedPageChrome == chrome {
                 warmAdjacentPages(); return
             }
-            guard currentCaptureInFlight == nil else { currentCapturePending = true; return }
-            let request = UUID(); cacheRequest = request; currentCaptureInFlight = request
+            if captureState.timedOut {
+                controller.error = "Page previews stopped responding. Close this book and reopen it to continue."
+                return
+            }
+            guard let request = captureState.begin() else { currentCapturePending = true; return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
-                guard let self, self.currentCaptureInFlight == request, self.cacheRequest == request, !self.searchPresented else { return }
+                guard let self, self.captureState.timeout(request) else { return }
                 // Quiesce this session rather than spawning overlapping retries.
-                self.currentCapturePending = false; self.cacheRequest = UUID()
+                // An invalidated capture still owns its watchdog until it replies.
+                self.currentCapturePending = false
                 self.invalidateSnapshots(); self.releaseSnapshotRenderer()
-                self.controller.error = "Page previews stopped responding. Close this book and reopen it to continue."
+                if !self.searchPresented {
+                    self.controller.error = "Page previews stopped responding. Close this book and reopen it to continue."
+                }
             }
             let configuration = WKSnapshotConfiguration()
             configuration.afterScreenUpdates = true
             web.takeSnapshot(with: configuration) { [weak self] image, _ in
-                guard let self, self.currentCaptureInFlight == request else { return }
-                self.currentCaptureInFlight = nil
+                guard let self, let isCurrent = self.captureState.finish(request) else { return }
                 defer {
                     if self.currentCapturePending { self.currentCapturePending = false; self.cacheCurrentPage() }
                 }
-                guard self.cacheRequest == request, self.interactiveSwipe == nil,
+                guard isCurrent, self.interactiveSwipe == nil,
                       self.turnToken == nil, !self.interactiveFinishing, !self.curlTurning,
                       self.controller.position.cfi == cfi, self.latestPreferences == preferences, self.latestChrome == chrome,
                       self.web?.bounds.size == size else { return }
@@ -593,32 +860,48 @@ struct EPUBSurface: EPUBViewRepresentable {
                 self.cachedPageCFI = cfi
                 self.cachedPagePreferences = preferences; self.cachedPageChrome = chrome
                 self.warmAdjacentPages()
+                self.drainTurns()
             }
         }
         #endif
         func pageChrome(_ chrome: ReaderPageChrome) {
             guard chrome != latestChrome else { return }
             latestChrome = chrome
+            #if os(macOS)
+            reflowBridge?.invalidate()
+            #endif
             #if os(iOS)
-            abortInteractive(); invalidateSnapshots(); cachedPage = nil; cacheRequest = UUID()
+            interruptDecoration(); invalidateSnapshots(); cachedPage = nil; captureState.invalidate()
             #endif
             if loaded { sendRaw("pageChrome", chromeObject()) }
+            #if os(iOS)
+            finishCardIfReady(); drainTurns()
+            #endif
         }
         private func chromeObject() -> Any { (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(latestChrome))) ?? [:] }
         func preferences(_ preferences: ReaderPreferences) {
             guard preferences != latestPreferences else { return }
             #if os(macOS)
             cancelMacTrackpad()
+            reflowBridge?.invalidate()
             #endif
             latestPreferences = preferences
             #if os(iOS)
-            abortInteractive(); resetCurl(); invalidateSnapshots()
-            cachedPage = nil; cacheRequest = UUID()
+            // Keep the live WebKit view attached during ordinary typography
+            // changes. Only an in-progress curl needs its controller rebuilt.
+            let interruptedCurl = curlTurning
+            interruptDecoration()
+            if interruptedCurl { resetCurl() }
+            invalidateSnapshots()
+            cachedPage = nil; captureState.invalidate()
             web?.scrollView.isScrollEnabled = preferences.scrolling
             web?.scrollView.bounces = preferences.scrolling
             hostController?.configureCurl()
             #endif
             if loaded { send("preferences", preferencesObject()) }
+            #if os(iOS)
+            finishCardIfReady(); drainTurns()
+            #endif
         }
         private var nativeGestures: Bool {
             #if os(iOS)
@@ -632,9 +915,24 @@ struct EPUBSurface: EPUBViewRepresentable {
             value["pageChrome"] = chromeObject(); return value
         }
         func send(_ command: String, _ value: Any?) {
+            if command == "savedHighlights" { highlightPayload = value as? [Any] ?? [] }
             #if os(macOS)
+            if ["next", "previous", "seek", "location", "annotationLocation", "layoutPage", "trackpad", "savedHighlights", "search", "searchPresentation"].contains(command) {
+                reflowBridge?.invalidate()
+            }
+            if command == "sidebarTransition", let transition = value as? [String: Any],
+               let request = transition["request"] as? String {
+                if transition["phase"] as? String == "begin" {
+                    // Establish cover/softening before SwiftUI starts moving
+                    // the inspector, not during its first native layout frame.
+                    reflowBridge?.geometryWillChange()
+                    beginSidebarPaper(request, live: transition["mode"] as? String == "live")
+                } else if transition["phase"] as? String == "end", request == sidebarPaperRequest {
+                    sidebarPaperEnded = true
+                }
+            }
             if command == "trackpad", let value = value as? [String: Any] { trackpad(value); return }
-            if macTurn != nil && ["next", "previous", "seek", "location", "layoutPage"].contains(command) {
+            if macTurn != nil && ["next", "previous", "seek", "location", "annotationLocation", "layoutPage"].contains(command) {
                 macWaitingCommands.append((command, value)); cancelMacTrackpad()
                 if macTurn == nil { drainMacCommands() }; return
             }
@@ -643,11 +941,12 @@ struct EPUBSurface: EPUBViewRepresentable {
             if command == "searchPresentation", let active = value as? Bool {
                 searchPresented = active
                 if active {
-                    abortInteractive(); invalidateSnapshots(); cachedPage = nil; cacheRequest = UUID()
+                    interruptDecoration(); invalidateSnapshots(); cachedPage = nil; captureState.invalidate()
+                    finishCardIfReady(); drainTurns()
                 }
             }
             if command == "next" || command == "previous" {
-                if turnToken != nil || pendingCard != nil || curlTurning { queueTurn(command) } else { turnPage(command) }
+                if turnToken != nil || pendingCard != nil || curlTurning || settlingPage != nil || !queuedTurns.isEmpty { queueTurn(command) } else { turnPage(command) }
                 return
             }
             #endif
@@ -673,39 +972,43 @@ struct EPUBSurface: EPUBViewRepresentable {
                 sendRaw(direction, nil); return
             }
             let token = UUID(); turnToken = token
-            web.takeSnapshot(with: nil) { [weak self, weak web] image, _ in
-                guard let self, self.turnToken == token, let web else { return }
-                if let image {
-                    let outgoing = UIImageView(image: image)
-                    outgoing.frame = web.bounds
-                    outgoing.contentMode = .scaleToFill
-                    outgoing.isUserInteractionEnabled = false
-                    outgoing.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                    (self.host ?? web).addSubview(outgoing)
-                    self.outgoingPage = outgoing
-                }
-                self.sendNativeTurn(direction, token: token)
+            // Cached images are optional decoration. Never delay navigation on
+            // a fresh WebKit capture when the current image is unavailable.
+            if cachedPageCFI == controller.position.cfi, cachedPageSize == web.bounds.size,
+               cachedPagePreferences == latestPreferences, cachedPageChrome == latestChrome, let image = cachedPage {
+                let outgoing = UIImageView(image: image)
+                outgoing.frame = web.bounds; outgoing.contentMode = .scaleToFill
+                outgoing.isUserInteractionEnabled = false
+                outgoing.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                (host ?? web).addSubview(outgoing); outgoingPage = outgoing
             }
-
+            sendNativeTurn(direction, token: token)
         }
         private func finishTurn(direction: String, animated: Bool) {
             guard turnToken != nil else { return }
             turnToken = nil
-            defer { drainTurns() }
-            guard let outgoing = outgoingPage else { sendRaw("clearSelection", nil); cacheCurrentPage(); return }
+            guard let outgoing = outgoingPage else { sendRaw("clearSelection", nil); cacheCurrentPage(); drainTurns(); return }
             outgoingPage = nil
-            guard animated, queuedTurns.isEmpty, let web else { outgoing.removeFromSuperview(); sendRaw("clearSelection", nil); cacheCurrentPage(); return }
+            guard animated, let web else { outgoing.removeFromSuperview(); sendRaw("clearSelection", nil); cacheCurrentPage(); drainTurns(); return }
             settlingPage = outgoing
+            queuedTurns.beginSettling()
+            // Capture the live destination in the background while the outgoing
+            // image is settling, so a follow-up can use it without waiting.
+            cacheCurrentPage()
             let distance = web.bounds.width * (direction == "next" ? -1 : 1)
-            UIView.animate(withDuration: latestPreferences.pageTransition == "fade" ? 0.18 : 0.22,
+            let duration = queuedTurns.isEmpty ? (latestPreferences.pageTransition == "fade" ? 0.32 : 0.22) : 0.10
+            UIView.animate(withDuration: duration,
                            delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
                 outgoing.transform = self.latestPreferences.pageTransition == "fade" ? .identity : CGAffineTransform(translationX: distance, y: 0)
-                outgoing.alpha = 0
+                if self.latestPreferences.pageTransition == "fade" { outgoing.alpha = 0 }
             } completion: { _ in
                 outgoing.removeFromSuperview()
-                if self.settlingPage === outgoing { self.settlingPage = nil }
+                guard self.settlingPage === outgoing else { return }
+                self.settlingPage = nil
+                self.queuedTurns.endSettling()
                 self.sendRaw("clearSelection", nil)
                 self.cacheCurrentPage()
+                self.drainTurns()
             }
         }
         #endif
@@ -723,11 +1026,61 @@ struct EPUBSurface: EPUBViewRepresentable {
                 loaded = true
                 let relative = String(prepared.document.path.dropFirst(prepared.directory.path.count + 1))
                 var components = URLComponents(); components.scheme = "appbook"; components.host = "local"; components.path = "/publication/" + relative
-                send("open", ["url": components.url!.absoluteString, "cfi": prepared.position.cfi as Any? ?? NSNull(), "fraction": prepared.position.fraction, "preferences": preferencesObject(), "nativeGestures": nativeGestures])
+                send("open", ["url": components.url!.absoluteString, "title": prepared.book.title, "cfi": prepared.position.cfi as Any? ?? NSNull(), "fraction": prepared.position.fraction, "preferences": preferencesObject(), "nativeGestures": nativeGestures, "nativeReflowBridge": !nativeGestures])
+            #if os(macOS)
+            case "reflowBegin":
+                if let request = value["request"] as? String { reflowBridge?.begin(request: request) }
+            case "reflowPainted":
+                if let request = value["request"] as? String,
+                   let width = value["viewWidth"] as? Double, let height = value["viewHeight"] as? Double {
+                    reflowBridge?.painted(request: request, width: width, height: height)
+                }
+            case "sidebarLayoutReady":
+                guard let request = value["request"] as? String, let width = value["width"] as? Double else { return }
+                finishSidebarPaper(request: request, width: width, settled: value["settled"] as? Bool ?? false)
+            #endif
             case "stage": controller.loadingStatus = value["label"] as? String ?? "Opening book…"
             case "ready":
                 controller.ready = true
+                #if os(macOS)
+                reflowBridge?.prepare()
+                #endif
                 #if os(iOS)
+                cacheCurrentPage()
+                #endif
+            case "selectedText":
+                guard let cfi = value["cfi"] as? String, cfi.hasPrefix("epubcfi("), cfi.hasSuffix(")"), cfi.count <= 8192,
+                      let text = value["text"] as? String, !text.isEmpty, text.utf16.count <= 16384 else { return }
+                controller.epubSelection = EPUBSelection(cfi: cfi, text: text, context: (value["context"] as? String).flatMap { $0.utf16.count <= 1024 ? $0 : nil })
+                controller.controlsVisible = true
+                #if os(iOS)
+                UIMenuSystem.context.setNeedsRebuild()
+                #endif
+            case "publicationLayout":
+                guard let fixed = value["fixed"] as? Bool else { return }
+                controller.fixedLayout = fixed
+            case "annotationActivated":
+                #if os(macOS)
+                guard controller.highlighterColor == nil else { return }
+                #endif
+                guard let rawID = value["id"] as? String, let id = UUID(uuidString: rawID) else { return }
+                controller.annotationAction?(id)
+            case "highlighterSelectionCommitted":
+                guard let cfi = value["cfi"] as? String, cfi.hasPrefix("epubcfi("), cfi.hasSuffix(")"), cfi.count <= 8192,
+                      let text = value["text"] as? String, !text.isEmpty, text.utf16.count <= 16384 else { return }
+                #if os(macOS)
+                guard controller.highlighterColor != nil,
+                      value["request"] as? String == highlighterGeneration.uuidString else { return }
+                controller.highlighterAction?(EPUBSelection(cfi: cfi, text: text, context: (value["context"] as? String).flatMap { $0.utf16.count <= 1024 ? $0 : nil }))
+                #endif
+            case "highlightsUpdated":
+                #if os(macOS)
+                if controller.ready { reflowBridge?.prepare() }
+                #endif
+                #if os(iOS)
+                // The CFI and viewport can remain unchanged while the painted
+                // page changes. Reject any older in-flight capture as well.
+                invalidateSnapshots(); cachedPage = nil; captureState.invalidate()
                 cacheCurrentPage()
                 #endif
             #if os(iOS)
@@ -736,8 +1089,12 @@ struct EPUBSurface: EPUBViewRepresentable {
                 textSelectionActive = false
                 cacheCurrentPage()
             case "swipe":
-                if let direction = value["direction"] as? String, direction == "next" || direction == "previous" { send(direction, nil) }
-            case "selection": textSelectionActive = value["active"] as? Bool ?? false
+                if let direction = value["direction"] as? String, direction == "next" || direction == "previous" {
+                    if value["queue"] as? Bool == true {
+                        guard value["queueRequest"] as? String == interactionEpoch.uuidString else { return }
+                        queueTurn(direction)
+                    } else { send(direction, nil) }
+                }
             case "turned":
                 if let token = curlToken, value["request"] as? String == token.uuidString {
                     let completion = curlCompletion; curlCompletion = nil; curlToken = nil; curlTurning = false
@@ -748,6 +1105,15 @@ struct EPUBSurface: EPUBViewRepresentable {
                     finishTurn(direction: value["direction"] as? String ?? "next", animated: true)
                 }
             #endif
+            case "selection":
+                let active = value["active"] as? Bool ?? false
+                controller.epubSelectionActive = active
+                #if os(macOS)
+                reflowBridge?.setSuspended(active)
+                #endif
+                #if os(iOS)
+                textSelectionActive = active
+                #endif
             #if os(macOS)
             case "previewReady":
                 if let stroke = macTurn { stroke.ready = true; stroke.boundary = value["changed"] as? Bool == false; updateMacTrackpad(stroke) }
@@ -756,8 +1122,13 @@ struct EPUBSurface: EPUBViewRepresentable {
             #endif
             case "position":
                 guard let fraction = value["fraction"] as? Double, fraction.isFinite else { return }
+                #if os(macOS)
+                if controller.position.cfi != value["cfi"] as? String { reflowBridge?.invalidate() }
+                if controller.ready { reflowBridge?.prepare() }
+                #endif
+                if controller.position.cfi != value["cfi"] as? String { controller.epubSelection = nil }
                 controller.currentChapter = value["href"] as? String
-                controller.chapterTitle = value["chapterTitle"] as? String ?? "Reading"
+                controller.chapterTitle = value["chapterTitle"] as? String ?? ""
                 controller.chapterPage = value["chapterPage"] as? Int ?? 0
                 controller.chapterPageCount = value["chapterPageCount"] as? Int ?? 0
                 controller.bookPage = value["bookPage"] as? Int ?? 0
@@ -793,13 +1164,15 @@ struct EPUBSurface: EPUBViewRepresentable {
             case "navigationError": controller.returnPosition = nil; controller.navigationError = true
             case "error":
                 #if os(macOS)
+                reflowBridge?.invalidate()
+                stopSidebarPaper()
                 stopMacTrackpad()
                 #endif
                 #if os(iOS)
                 abortInteractive(); resetCurl()
                 finishTurn(direction: "next", animated: false)
                 #endif
-                controller.error = "This EPUB could not be rendered. It may be damaged or use unsupported content."; controller.searching = false
+                controller.error = "This EPUB could not be rendered. It may be damaged or use unsupported content. Some requested page turns may be unfinished. Close this book and reopen it before continuing."; controller.searching = false
             default: break
             }
         }
@@ -808,12 +1181,16 @@ struct EPUBSurface: EPUBViewRepresentable {
             decisionHandler(scheme == "appbook" || scheme == "about" || scheme == "blob" ? .allow : .cancel)
         }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            #if os(macOS)
+            reflowBridge?.invalidate()
+            #endif
             #if os(iOS)
             if webView === snapshotWeb { invalidateSnapshots(); return }
             #endif
             controller.error = "The local reader could not be loaded." }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             #if os(macOS)
+            reflowBridge?.invalidate()
             stopMacTrackpad()
             #endif
             #if os(iOS)
@@ -821,9 +1198,176 @@ struct EPUBSurface: EPUBViewRepresentable {
             stopSnapshots(); hostController?.resetCurlSurface(rebuild: false)
             #endif
             controller.ready = false
-            controller.error = "The book's reading process stopped. Close this book and reopen it to continue." }
+            controller.error = "The book's reading process stopped. Uncompleted page turns will not replay. Close this book and reopen it to continue." }
     }
 }
+#if os(macOS)
+@MainActor final class ReaderMenuWebView: WKWebView {
+    var reflowGeometryWillChange: (() -> Void)?
+    var reflowInteraction: (() -> Void)?
+    override func setFrameSize(_ newSize: NSSize) {
+        if frame.size != newSize { reflowGeometryWillChange?() }
+        super.setFrameSize(newSize)
+    }
+    override func mouseDown(with event: NSEvent) { reflowInteraction?(); super.mouseDown(with: event) }
+    override func keyDown(with event: NSEvent) { reflowInteraction?(); super.keyDown(with: event) }
+    override func scrollWheel(with event: NSEvent) { reflowInteraction?(); super.scrollWheel(with: event) }
+    private static let highlighterCursor: NSCursor = {
+        let size = NSSize(width: 24, height: 22)
+        let image = NSImage(size: size, flipped: false) { _ in
+            // Draw the insertion marker with a contrasting rim so it remains
+            // visible on both light and dark reading themes.
+            let beam = NSBezierPath()
+            beam.move(to: NSPoint(x: 4, y: 3)); beam.line(to: NSPoint(x: 4, y: 19))
+            beam.move(to: NSPoint(x: 1.5, y: 3)); beam.line(to: NSPoint(x: 6.5, y: 3))
+            beam.move(to: NSPoint(x: 1.5, y: 19)); beam.line(to: NSPoint(x: 6.5, y: 19))
+            beam.lineCapStyle = .round; beam.lineJoinStyle = .round
+            NSColor.white.setStroke(); beam.lineWidth = 3; beam.stroke()
+            NSColor.black.setStroke(); beam.lineWidth = 1.2; beam.stroke()
+            let badge = NSRect(x: 9, y: 0.5, width: 13, height: 13)
+            let background = NSBezierPath(roundedRect: badge, xRadius: 4, yRadius: 4)
+            NSColor.white.setFill(); background.fill()
+            NSColor.black.setStroke(); background.lineWidth = 1; background.stroke()
+            if let pen = NSImage(systemSymbolName: "highlighter", accessibilityDescription: nil)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.black])) {
+                pen.draw(in: badge.insetBy(dx: 2, dy: 2))
+            }
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: 4, y: 11))
+    }()
+    weak var readerController: ReaderController?
+    private var menuRequest = UUID()
+    private var menuOrigin: String?
+    private var menuCapture: Task<EPUBSelection?, Never>?
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if readerController?.highlighterColor != nil { addCursorRect(bounds, cursor: Self.highlighterCursor) }
+    }
+    override func cancelOperation(_ sender: Any?) {
+        guard let controller = readerController, controller.highlighterColor != nil else {
+            super.cancelOperation(sender)
+            return
+        }
+        controller.highlighterColor = nil
+    }
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        reflowInteraction?()
+        super.willOpenMenu(menu, with: event)
+        menuRequest = UUID(); menuCapture?.cancel(); menuCapture = nil; menuOrigin = nil
+        let prefix = "LibraVia.Selection."
+        // WebKit may reuse its menu; replace only the items we own.
+        for item in menu.items where item.identifier?.rawValue.hasPrefix(prefix) == true { menu.removeItem(item) }
+        // The WebKit menu is built from its current hit test, which arrives
+        // before the reader's periodic selection notification can reach Swift.
+        // A native Copy item identifies selected text, unlike Copy Link/Image.
+        guard let controller = readerController, controller.ready,
+              let origin = controller.position.cfi, let window,
+              menu.items.contains(where: { $0.tag == Int(WebMenuItemTagCopy) && $0.isEnabled }) else { return }
+        let request = menuRequest
+        menuOrigin = origin
+        // Begin sampling as the menu opens, without delaying native menu display.
+        // An immediate action awaits this capture, then validates the live range.
+        let (samples, continuation) = AsyncStream<EPUBSelection>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        menuCapture = Task { var iterator = samples.makeAsyncIterator(); return await iterator.next() }
+        // Submit the WebKit read synchronously here: a Task alone might not
+        // start until AppKit finishes tracking the menu.
+        evaluateJavaScript(Self.menuSelectionScript) { [weak self, weak controller, weak window] result, error in
+            defer { continuation.finish() }
+            guard let self, let controller, let window, error == nil,
+                  self.readerController === controller, self.window === window,
+                  self.menuRequest == request, controller.ready, controller.position.cfi == origin,
+                  let selection = Self.decodeMenuSelection(result, origin: origin) else { return }
+            continuation.yield(selection)
+        }
+        for (index, entry) in [("Highlight", false), ("Add Note", true)].enumerated() {
+            let (title, note) = entry
+            let item = NSMenuItem(title: title, action: #selector(performReadingAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.identifier = NSUserInterfaceItemIdentifier(prefix + (note ? "note" : "highlight"))
+            item.representedObject = ["note": note, "request": request.uuidString] as [String: Any]
+            menu.insertItem(item, at: index)
+        }
+        var insertion = 2
+        if menu.items.contains(where: { $0.tag == Int(WebMenuItemTagLookUpInDictionary) && $0.isEnabled }) {
+            let define = NSMenuItem(title: "Define", action: #selector(defineSelection(_:)), keyEquivalent: "")
+            define.target = self; define.identifier = NSUserInterfaceItemIdentifier(prefix + "define")
+            define.representedObject = ["point": NSValue(point: convert(event.locationInWindow, from: nil)), "request": request.uuidString]
+            menu.insertItem(define, at: insertion); insertion += 1
+        }
+        let separator = NSMenuItem.separator()
+        separator.identifier = NSUserInterfaceItemIdentifier(prefix + "separator")
+        menu.insertItem(separator, at: insertion)
+    }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            menuRequest = UUID(); menuCapture?.cancel(); menuCapture = nil; menuOrigin = nil
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+    @objc private func defineSelection(_ item: NSMenuItem) {
+        guard let data = item.representedObject as? [String: Any], let point = data["point"] as? NSValue,
+              let value = data["request"] as? String, let request = UUID(uuidString: value) else { return }
+        resolveMenuSelection(request: request) { [weak self] selection in
+            guard let self, let term = ReaderDictionary.term(selection.text) else { return }
+            self.showDefinition(for: NSAttributedString(string: term), at: point.pointValue)
+        }
+    }
+    @objc private func performReadingAction(_ item: NSMenuItem) {
+        guard let data = item.representedObject as? [String: Any], let note = data["note"] as? Bool,
+              let value = data["request"] as? String, let request = UUID(uuidString: value) else { return }
+        resolveMenuSelection(request: request) { [weak self] selection in
+            guard let controller = self?.readerController else { return }
+            controller.epubSelection = selection
+            controller.epubSelectionActive = true
+            controller.selectionMenuAction?(note, selection)
+        }
+    }
+    // Only the trusted shell reads the script-disabled publication frames.
+    private static let menuSelectionScript = """
+    (() => {
+      if (!ready) return null;
+      pollSelection();
+      if (!lastPolledSelection) return null;
+      const [anchor, cfi, text] = JSON.parse(lastPolledSelection);
+      return {anchor, cfi, text, context: lastSelectionContext};
+    })()
+    """
+    private static func decodeMenuSelection(_ raw: Any?, origin: String) -> EPUBSelection? {
+        guard let data = raw as? [String: Any], data["anchor"] as? String == origin,
+              let cfi = data["cfi"] as? String, cfi.hasPrefix("epubcfi("), cfi.hasSuffix(")"), cfi.count <= 8192,
+              let text = data["text"] as? String, !text.isEmpty, text.utf16.count <= 16384 else { return nil }
+        let context = (data["context"] as? String).flatMap { $0.utf16.count <= 1024 ? $0 : nil }
+        return EPUBSelection(cfi: cfi, text: text, context: context)
+    }
+    private func sampleMenuSelection(origin: String) async -> EPUBSelection? {
+        guard let raw = try? await evaluateJavaScript(Self.menuSelectionScript) else { return nil }
+        return Self.decodeMenuSelection(raw, origin: origin)
+    }
+    private func resolveMenuSelection(request: UUID, _ completion: @escaping (EPUBSelection) -> Void) {
+        guard menuRequest == request, let capture = menuCapture,
+              let controller = readerController, controller.ready,
+              let origin = menuOrigin, controller.position.cfi == origin, let window else { return }
+        Task { [weak self, weak controller, weak window] in
+            let first = await capture.value
+            guard let self, let controller, let window, self.readerController === controller,
+                  self.window === window, self.menuRequest == request,
+                  controller.ready, controller.position.cfi == origin else { return }
+            let second = await self.sampleMenuSelection(origin: origin)
+            guard self.readerController === controller, self.window === window, self.menuRequest == request,
+                  controller.ready, controller.position.cfi == origin else { return }
+            guard let first, let second, first.cfi == second.cfi, first.text == second.text else {
+                guard window.attachedSheet == nil else { return }
+                let alert = NSAlert(); alert.messageText = "Selection no longer available"
+                alert.informativeText = "Select the passage again and reopen the menu."
+                alert.beginSheetModal(for: window, completionHandler: nil)
+                return
+            }
+            completion(second)
+        }
+    }
+}
+#endif
 #if os(iOS)
 /// Keep the live WebKit page in the native curl's current controller, so center
 /// interaction, selection and accessibility stay live rather than screenshot-only.
@@ -852,6 +1396,26 @@ struct EPUBSurface: EPUBViewRepresentable {
         web.frame = view.bounds; web.autoresizingMask = [.flexibleWidth, .flexibleHeight]; view.addSubview(web)
     }
 }
+// Enabled only after UIKit has finished recognizing its own touch. Tracking
+// starts before recognition so a pending touch cannot lose ownership midway.
+@MainActor final class ReaderCurlCatchUpPan: UIPanGestureRecognizer {
+    private(set) var trackingTouch = false
+    private(set) var initialLocation: CGPoint?
+    var touchFinished: (() -> Void)?
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        if !trackingTouch, let touch = touches.first { initialLocation = touch.location(in: view) }
+        trackingTouch = true; super.touchesBegan(touches, with: event)
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesEnded(touches, with: event); trackingTouch = false; touchFinished?()
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesCancelled(touches, with: event); trackingTouch = false; touchFinished?()
+    }
+    override func reset() {
+        super.reset(); trackingTouch = false; initialLocation = nil; touchFinished?()
+    }
+}
 @MainActor final class ReaderCurlGate: UIView {
     weak var owner: ReaderHostController?
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
@@ -859,20 +1423,52 @@ struct EPUBSurface: EPUBViewRepresentable {
         return super.hitTest(point, with: event)
     }
 }
-@MainActor final class ReaderHostController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+@MainActor final class ReaderHostController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
     let web: WKWebView
     weak var coordinator: EPUBSurface.Coordinator?
     private var curl: UIPageViewController?
     private var currentPage: ReaderCurlPage?
     private var lastSize = CGSize.zero
     private var neighbours: [Int:ReaderCurlPage] = [:]
+    private var catchUpPan: ReaderCurlCatchUpPan?
+    private var catchUpOwnsInput = false
+    private var curlOwnershipGeneration = UUID()
+    private var catchUpStart: CGPoint?
     init(web: WKWebView, coordinator: EPUBSurface.Coordinator) {
         self.web = web; self.coordinator = coordinator; super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func buildMenu(with builder: any UIMenuBuilder) {
+        super.buildMenu(with: builder)
+        guard builder.system == UIMenuSystem.context,
+              let controller = coordinator?.controller, controller.epubSelectionActive,
+              let selection = controller.epubSelection else { return }
+        let highlight = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak controller] _ in
+            controller?.selectionMenuAction?(false, selection)
+        }
+        let note = UIAction(title: "Add Note", image: UIImage(systemName: "square.and.pencil")) { [weak controller] _ in
+            controller?.selectionMenuAction?(true, selection)
+        }
+        var actions: [UIMenuElement] = [highlight, note]
+        if let term = ReaderDictionary.term(selection.text) {
+            actions.append(UIAction(title: "Define", image: UIImage(systemName: "book.closed")) { [weak self] _ in
+                guard let self, self.presentedViewController == nil else { return }
+                self.present(UIReferenceLibraryViewController(term: term), animated: true)
+            })
+        }
+        let menu = UIMenu(title: "", options: .displayInline, children: actions)
+        if builder.menu(for: .standardEdit) != nil { builder.insertSibling(menu, afterMenu: .standardEdit) }
+        else { builder.insertChild(menu, atEndOfMenu: .root) }
+    }
     override func loadView() {
         let host = ReaderCurlGate(); host.owner = self; view = host
         web.frame = host.bounds; web.autoresizingMask = [.flexibleWidth, .flexibleHeight]; host.addSubview(web)
+        let catchUp = ReaderCurlCatchUpPan(target: self, action: #selector(catchUpGesture(_:)))
+        catchUp.maximumNumberOfTouches = 1; catchUp.cancelsTouchesInView = false
+        catchUp.delegate = self; catchUp.isEnabled = false
+        catchUp.touchFinished = { [weak self] in self?.scheduleCurlInputOwnershipUpdate() }
+        host.addGestureRecognizer(catchUp); catchUpPan = catchUp
+        coordinator?.pageTap?.require(toFail: catchUp)
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
@@ -894,13 +1490,14 @@ struct EPUBSurface: EPUBViewRepresentable {
     }
     func configureCurl() {
         curl?.view.backgroundColor = paperColor; currentPage?.view.backgroundColor = paperColor
+        for page in neighbours.values { page.view.backgroundColor = paperColor }
         let enabled = coordinator?.latestPreferences.pageTransition == "curl" && coordinator?.latestPreferences.scrolling == false && !UIAccessibility.isReduceMotionEnabled
         if enabled, curl == nil {
             let page = ReaderCurlPage(offset: 0, image: nil, color: paperColor)
             page.view.frame = view.bounds; page.attach(web)
             let controller = UIPageViewController(transitionStyle: .pageCurl, navigationOrientation: .horizontal,
                                                   options: [.spineLocation:UIPageViewController.SpineLocation.min.rawValue])
-            controller.view.backgroundColor = paperColor; controller.isDoubleSided = false
+            controller.view.backgroundColor = paperColor; controller.isDoubleSided = true
             controller.dataSource = self; controller.delegate = self
             addChild(controller); controller.view.frame = view.bounds
             controller.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -909,8 +1506,15 @@ struct EPUBSurface: EPUBViewRepresentable {
             currentPage = page; curl = controller
             // Native pans start enabled; missing pages are rejected by the data source.
             // Keep UIKit's delegates and disable only its tap-to-turn recognizers.
-            for gesture in controller.gestureRecognizers { gesture.isEnabled = !(gesture is UITapGestureRecognizer) }
+            for gesture in controller.gestureRecognizers {
+                gesture.isEnabled = !(gesture is UITapGestureRecognizer)
+                if let pan = gesture as? UIPanGestureRecognizer {
+                    pan.addTarget(self, action: #selector(nativeCurlPanChanged(_:)))
+                    coordinator?.pageTap?.require(toFail: pan)
+                }
+            }
         } else if !enabled, let curl {
+            curlOwnershipGeneration = UUID(); catchUpOwnsInput = false; catchUpPan?.isEnabled = false; catchUpStart = nil
             curl.willMove(toParent: nil)
             web.removeFromSuperview(); web.frame = view.bounds; view.addSubview(web)
             curl.view.removeFromSuperview(); curl.removeFromParent(); self.curl = nil; currentPage = nil; neighbours.removeAll()
@@ -918,6 +1522,7 @@ struct EPUBSurface: EPUBViewRepresentable {
     }
     func resetCurlSurface(rebuild: Bool = true) {
         guard let old = curl else { return }
+        curlOwnershipGeneration = UUID(); catchUpOwnsInput = false; catchUpPan?.isEnabled = false; catchUpStart = nil
         old.delegate = nil; old.dataSource = nil; old.willMove(toParent: nil)
         web.removeFromSuperview(); web.frame = view.bounds; view.addSubview(web)
         old.view.removeFromSuperview(); old.removeFromParent(); curl = nil; currentPage = nil; neighbours.removeAll()
@@ -940,16 +1545,81 @@ struct EPUBSurface: EPUBViewRepresentable {
         curl.dataSource = self
     }
     func gateCurlGestures(at point: CGPoint) {
-        guard coordinator?.curlTurning == false else { return }
+        guard !catchUpOwnsInput, coordinator?.curlTurning == false else { return }
         let allowed = coordinator?.canCurl(at: point) == true
+        if !allowed, coordinator?.canCatchUpCurl(at: point) == true {
+            // While genuine adjacent snapshots are cold, take the same guarded
+            // FIFO path instead of rejecting the user's swipe.
+            beginCurlCatchUpOwnership(); return
+        }
         // UIKit retains its own gesture delegates. Only documented recognizer
         // enablement is changed; native taps defer to LibraVia's tap zones.
         for gesture in curl?.gestureRecognizers ?? [] { gesture.isEnabled = allowed && !(gesture is UITapGestureRecognizer) }
     }
+    @objc private func nativeCurlPanChanged(_ pan: UIPanGestureRecognizer) {
+        guard (pan.state == .ended || pan.state == .cancelled), coordinator?.curlTurning == true else { return }
+        beginCurlCatchUpOwnership()
+    }
+    private func beginCurlCatchUpOwnership() {
+        guard !catchUpOwnsInput, let curl else { return }
+        let nativePans = curl.gestureRecognizers.compactMap { $0 as? UIPanGestureRecognizer }
+        guard !nativePans.isEmpty, nativePans.allSatisfy({ $0.state != .began && $0.state != .changed }) else { return }
+        // A finished native touch remains UIKit's; later touches belong only to
+        // the catch-up pan until navigation and every outstanding guard finish.
+        curlOwnershipGeneration = UUID(); catchUpOwnsInput = true
+        for pan in nativePans { pan.isEnabled = false }
+        catchUpPan?.isEnabled = true
+    }
+    func scheduleCurlInputOwnershipUpdate() {
+        // UIKit may deliver target actions after touchesEnded returns. Do not
+        // disarm until that event has had a chance to reserve its turn.
+        let generation = curlOwnershipGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.curlOwnershipGeneration == generation else { return }
+            self.updateCurlInputOwnership()
+        }
+    }
+    private func updateCurlInputOwnership() {
+        guard catchUpOwnsInput, coordinator?.curlInputBusy == false,
+              catchUpPan?.trackingTouch != true else { return }
+        catchUpOwnsInput = false; catchUpPan?.isEnabled = false; catchUpStart = nil
+        for gesture in curl?.gestureRecognizers ?? [] { gesture.isEnabled = !(gesture is UITapGestureRecognizer) }
+    }
+    @objc private func catchUpGesture(_ pan: ReaderCurlCatchUpPan) {
+        switch pan.state {
+        case .began:
+            guard let point = pan.initialLocation, let container = pan.view else { return }
+            catchUpStart = web.convert(point, from: container)
+        case .ended:
+            defer { catchUpStart = nil }
+            guard catchUpOwnsInput, let start = catchUpStart else { return }
+            let delta = pan.translation(in: web), speed = pan.velocity(in: web)
+            guard abs(delta.x) > abs(delta.y) * 1.5,
+                  ReaderTurnDecision.commits(translation: delta.x, velocity: speed.x, width: web.bounds.width) else { return }
+            coordinator?.queueCurlCatchUp(delta.x < 0 ? "next" : "previous", start: start)
+        case .cancelled, .failed: catchUpStart = nil
+        default: break
+        }
+    }
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Keep the observer attached to the complete touch sequence. Direction
+        // and commitment are checked only when the gesture ends.
+        gestureRecognizer === catchUpPan && catchUpOwnsInput
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        if other === coordinator?.pageTap { return false }
+        return true
+    }
     private func neighbour(_ offset: Int) -> ReaderCurlPage? {
-        guard abs(offset) == 1, let image = coordinator?.cachedAdjacentPage(offset > 0 ? "next" : "previous") else { return nil }
-        if let page = neighbours[offset] { page.show(image); return page }
-        let page = ReaderCurlPage(offset: offset, image: image, color: paperColor)
+        // A double-sided curl visits the back, then the adjacent front. Only
+        // create either when that real adjacent page is available.
+        guard (1...2).contains(abs(offset)),
+              let image = coordinator?.cachedAdjacentPage(offset > 0 ? "next" : "previous") else { return nil }
+        if let page = neighbours[offset] {
+            if abs(offset) == 2 { page.show(image) }
+            return page
+        }
+        let page = ReaderCurlPage(offset: offset, image: abs(offset) == 2 ? image : nil, color: paperColor)
         page.view.frame = view.bounds; neighbours[offset] = page; return page
     }
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
@@ -964,21 +1634,25 @@ struct EPUBSurface: EPUBViewRepresentable {
     func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool,
                             previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
         guard pageViewController === curl, coordinator?.curlTurning == true else { return }
-        guard completed, let page = pageViewController.viewControllers?.first as? ReaderCurlPage, page.offset != 0 else {
+        guard completed else {
             coordinator?.curlTurning = false; coordinator?.resumeQueuedTurns(); return
+        }
+        guard let page = pageViewController.viewControllers?.first as? ReaderCurlPage, abs(page.offset) == 2 else {
+            // Never commit a decorative back as a book page.
+            restoreLivePage(); coordinator?.curlTurning = false; coordinator?.resumeQueuedTurns(); return
         }
         commit(page)
     }
     private func commit(_ page: ReaderCurlPage) {
-        let direction = page.offset
+        let direction = page.offset > 0 ? 1 : -1
         let previous = currentPage, sourceImage = coordinator?.sourcePageImage()
         let destinationImage = coordinator?.cachedAdjacentPage(direction > 0 ? "next" : "previous")
         // EPUB.js schedules layout on animation frames. Keep the live renderer
         // in the visible destination hierarchy before asking it to advance.
         // The honest destination preview hides that layout without detaching it.
-        if let previous, let sourceImage { previous.offset = -direction; previous.show(sourceImage) }
+        if let previous, let sourceImage { previous.offset = -direction * 2; previous.show(sourceImage) }
         page.offset = 0; page.attach(web); currentPage = page; neighbours.removeAll()
-        if let previous, sourceImage != nil { neighbours[-direction] = previous }
+        if let previous, sourceImage != nil { neighbours[-direction * 2] = previous }
         let preview = destinationImage.map { UIImageView(image: $0) }
         if let preview {
             preview.frame = page.view.bounds; preview.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -990,9 +1664,12 @@ struct EPUBSurface: EPUBViewRepresentable {
         }
     }
     func animateCurl(_ direction: String) -> Bool {
-        guard let curl, coordinator?.curlTurning == false, let next = neighbour(direction == "next" ? 1 : -1) else { return false }
+        let sign = direction == "next" ? 1 : -1
+        guard let curl, coordinator?.curlTurning == false,
+              let next = neighbour(sign * 2), let back = neighbour(sign) else { return false }
         coordinator?.curlTurning = true
-        curl.setViewControllers([next], direction: direction == "next" ? .forward : .reverse, animated: true) { [weak self, weak next] completed in
+        beginCurlCatchUpOwnership()
+        curl.setViewControllers([next, back], direction: direction == "next" ? .forward : .reverse, animated: true) { [weak self, weak next] completed in
             guard let self, let next, self.curl === curl, self.coordinator?.curlTurning == true else { return }
             if completed { self.commit(next) }
             else { self.restoreLivePage(); self.coordinator?.curlTurning = false; self.coordinator?.resumeQueuedTurns() }
@@ -1027,15 +1704,25 @@ final class BookScheme: NSObject, WKURLSchemeHandler {
 #if os(iOS)
 extension EPUBSurface.Coordinator: UIGestureRecognizerDelegate {
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Let WebKit handle taps on an existing text selection and its edit menu.
+        if gestureRecognizer === pageTap {
+            return !textSelectionActive && !controller.epubSelectionActive
+        }
         guard gestureRecognizer === pagePan, let pan = gestureRecognizer as? UIPanGestureRecognizer, let web else { return true }
-        guard controller.ready, !latestPreferences.scrolling, interactiveSwipe == nil else { return false }
+        guard controller.ready, !latestPreferences.scrolling else { return false }
         if latestPreferences.pageTransition == "curl", !UIAccessibility.isReduceMotionEnabled { return false }
         guard contentBounds.contains(pan.location(in: web)) else { return false }
         let movement = pan.translation(in: web)
         return abs(movement.x) > abs(movement.y) * 1.5
     }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Selection can arrive from WebKit after the touch ends. Give its long
+        // press recognizers priority before deciding that this was a page tap.
+        return gestureRecognizer === pageTap && otherGestureRecognizer is UILongPressGestureRecognizer
+    }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === pagePan, otherGestureRecognizer === web?.scrollView.panGestureRecognizer { return false }
+        if gestureRecognizer === pageTap, otherGestureRecognizer === pagePan { return false }
         return true
     }
 }
