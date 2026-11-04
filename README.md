@@ -1,15 +1,15 @@
 # LibraVia
 
-The [roadmap to 1.0](docs/ROADMAP.md) defines the next milestones, including native reading, dependable offline books, multiple sources, annotations, and supported-server sync. Version 0.2.0 is the alpha source release for the native reading experience; later milestones remain planned. See [release notes](docs/releases/0.2.0.md), [changelog](CHANGELOG.md) and [current handoff](docs/HANDOFF.md) for shipped scope and remaining acceptance. Contributors and agents should start with [AGENTS.md](AGENTS.md), [architecture and ADRs](docs/ARCHITECTURE.md), and the [development workflow](docs/DEVELOPMENT.md).
+The [roadmap to 1.0](docs/ROADMAP.md) defines the remaining milestones. Version 0.2.5 is an alpha source prerelease with reader and native UI refinements and early local reading tools and offline-library features. See the [release notes](docs/releases/0.2.5.md), [changelog](CHANGELOG.md), and [handoff](docs/HANDOFF.md) for scope and outstanding acceptance. Contributors and agents should start with [AGENTS.md](AGENTS.md), [architecture and ADRs](docs/ARCHITECTURE.md), and the [development workflow](docs/DEVELOPMENT.md).
 
-LibraVia is a native SwiftUI reader for DRM-free EPUB, PDF, and CBZ books from a user-selected Jellyfin server. It targets iPhone, iPad, and native Mac on Apple OS 27 with Jellyfin 12. Audiobooks, additional providers, and older-platform compatibility are planned after this release.
+LibraVia is a native SwiftUI reader for DRM-free EPUB, PDF, and CBZ books on iPhone, iPad, and native Mac on Apple OS 27. Connect a Jellyfin 12 server or use a standalone local library. Audiobooks, additional providers, and older-platform compatibility are planned for later milestones.
 
 ## Get started
 
 1. Open `JellyfinBooks.xcodeproj` in Xcode 27.
 2. Select the shared **LibraVia** scheme and your iPhone, iPad, simulator, or **My Mac** destination.
 3. Copy `Configuration/LocalSigning.xcconfig.example` to `Configuration/LocalSigning.xcconfig` and set your Apple development team locally, or pass `DEVELOPMENT_TEAM` to Xcode. The local configuration is ignored by Git. All platforms share the bundle identifier `com.chameleonenterprise.LibraVia`.
-4. Run the app and enter your Jellyfin HTTPS server URL, username, and password. No server or credentials are supplied by the project.
+4. Run the app and either choose the local library or enter your Jellyfin HTTPS server URL, username, and password. No server or credentials are supplied by the project.
 
 The app identity changed during development. Earlier app containers and saved sessions are not automatically migrated; a new installation requires login. Debug builds provide **Preview a Sample Book** using original CC0 EPUB/PDF/CBZ fixtures. Release builds omit that entry point.
 
@@ -17,13 +17,13 @@ The app identity changed during development. Earlier app containers and saved se
 
 - Home with Continue Reading, additional in-progress books, server recommendations, collections, and recently added books.
 - Library cover grids or compact rows, author/genre/collection browsing, contextual filters, and independent paginated catalog search.
-- Download-on-open with validation and a managed 1 GB cache. Download and confirmed device-only removal actions retain positions and bookmarks.
+- Device saves, a download queue, local import, a user-selected books folder, and storage controls are available for alpha testing. Device-copy removal preserves source files and reading data.
 - EPUB typography, shared app colors, contents, bookmarks, text search, continuous chapter scrolling and layout-based pagination. Adjustable edge taps, genuine adjacent-page previews, interruptible card turns and native iPhone/iPad page curl.
-- Separate resizable Mac reader window, native menus/shortcuts, trackpad-driven EPUB turns and a floating glass inspector with inline appearance sliders.
+- Separate resizable Mac reader window, native menus/shortcuts, trackpad-driven EPUB turns and an attached inspector with inline appearance sliders.
 - PDFKit search and position-preserving navigation; cancellable comic image decoding with distinct zoom/pan and page gestures.
-- Exact local EPUB locations, local bookmarks/preferences, coalesced Jellyfin progress writes, retry, conflict selection, and deliberate rematching when a server item disappears.
+- Local bookmarks, highlights, notes, annotation navigation, and Markdown/JSON export are available for alpha testing. Jellyfin progress handling remains separate.
 
-Books are downloaded locally before reading; this is not progressive network rendering. Cached copies may be evicted. PDF text search requires a text layer; no OCR or DRM support is provided. EPUB page counts describe rendered screens/spreads for the current layout; typography and viewport changes trigger a recount. Counting/unavailable status replaces stale counts. Vertical mode reports percentage progress. Unusual/fixed layouts and large books still require acceptance. Search is capped at 200 results.
+Books are downloaded locally before reading; this is not progressive network rendering. Cached copies may be evicted; explicitly saved copies use separate storage. Offline and recovery behavior still require acceptance. Reading data and imported books are local: iCloud upload and restore are not connected. Signing out warns before deleting the Jellyfin account’s unsynced local reading data; a separately selected book folder remains user-owned. PDF text search requires a text layer; no OCR or DRM support is provided. EPUB page counts describe rendered screens/spreads for the current layout; typography and viewport changes trigger a recount. Counting/unavailable status replaces stale counts. Vertical mode reports percentage progress. Unusual/fixed layouts and large books still require acceptance. Search is capped at 200 results.
 
 ## Architecture
 
@@ -67,6 +67,6 @@ Run Xcode builds sequentially when sharing DerivedData. `scripts/generate_projec
 
 ## Release and acceptance status
 
-Version 0.2.0 is an owner-authorized alpha source release. It does not promote beta, preview or main, or establish a TestFlight/App Store distribution. Physical iPad, accessibility, sustained real-book Mac use and final mobile curl/search/haptic acceptance remain open in gate #28. Repository publication, archive validation, upload, processing, and tester distribution are separate steps; source availability does not establish a distributed build. See [VALIDATION.md](VALIDATION.md) for verified evidence and open gates, [PRIVACY.md](PRIVACY.md) for data handling, [SECURITY.md](SECURITY.md) for sensitive reports, [TESTFLIGHT.md](TESTFLIGHT.md) for beta setup, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution boundaries.
+Version 0.2.5 is an owner-authorized alpha source prerelease, not completion of 0.2 or 0.3 acceptance. Gates [#28](https://github.com/schillt/libravia/issues/28) and [#29](https://github.com/schillt/libravia/issues/29) remain open. Physical iPhone/iPad, accessibility, sustained real-book Mac use, offline reliability, and iCloud restore remain to be verified. Source publication, archive validation, upload, processing, and tester distribution are separate steps; this source release contains no distribution claim. See [VALIDATION.md](VALIDATION.md), [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), [TESTFLIGHT.md](TESTFLIGHT.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
 
-A final signed archive needs its entitlements, privacy report, dependency notices, and App Store Connect answers reviewed. Cross-installation and Jellyfin web-reader synchronization, including offline conflicts and PDF/CBZ fixtures, remain release gates.
+A signed archive needs its entitlements, privacy report, dependency notices, and App Store Connect answers reviewed. Cross-installation and Jellyfin web-reader synchronization, including offline conflicts and PDF/CBZ fixtures, remain release gates.

@@ -5,6 +5,13 @@ import AppKit
 import UIKit
 #endif
 
+enum ReaderPanel: String {
+    case contents, appearance, search
+    static func afterToggle(_ target: Self, active: Self?, visible: Bool) -> Self? {
+        visible && active == target ? nil : target
+    }
+}
+
 enum BookFormat: String, Codable, CaseIterable, Sendable {
     case epub, pdf, cbz, unsupported
     init(path: String?) { self = BookFormat(rawValue: (path ?? "").split(separator: ".").last.map(String.init)?.lowercased() ?? "") ?? .unsupported }
@@ -72,6 +79,161 @@ struct Bookmark: Identifiable, Codable, Sendable {
     var name: String
     var position: ReadingPosition
 }
+
+/// A local anchor keeps the format-specific location and the original text for
+/// recovery. A location from a different edition must never be attached silently.
+enum AnnotationAnchor: Codable, Equatable, Sendable {
+    case epub(cfi: String)
+    case pdf(page: Int, selections: [PDFAnnotationRect])
+    case page(Int)
+}
+struct PDFAnnotationRect: Codable, Equatable, Sendable {
+    // PDFKit page coordinates, before display rotation or zoom.
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+    var isValid: Bool { [x, y, width, height].allSatisfy(\.isFinite) && width > 0 && height > 0 }
+}
+struct PDFTextSelection: Equatable {
+    var page: Int
+    var rectangles: [PDFAnnotationRect]
+    var text: String
+}
+
+/// Tracks a single WebKit preview capture even when its content becomes stale.
+/// An invalidated request still needs a watchdog because WebKit may never reply.
+struct ReaderPreviewCaptureState {
+    private(set) var active: UUID?
+    private(set) var timedOut = false
+    private var generation = UUID()
+    mutating func invalidate() { generation = UUID() }
+    mutating func begin() -> UUID? {
+        guard active == nil, !timedOut else { return nil }
+        let request = UUID(); active = request; generation = request
+        return request
+    }
+    /// Nil means the callback belongs to an already retired request.
+    mutating func finish(_ request: UUID) -> Bool? {
+        guard active == request else { return nil }
+        let current = generation == request && !timedOut
+        active = nil; timedOut = false
+        return current
+    }
+    mutating func timeout(_ request: UUID) -> Bool {
+        guard active == request, !timedOut else { return false }
+        timedOut = true; invalidate()
+        return true
+    }
+}
+
+/// Ordered user requests; renderer acknowledgement remains owned by the caller.
+struct ReaderRapidTurnQueue {
+    private struct Entry {
+        var id: UUID
+        var direction: String
+        var allowed: Bool?
+    }
+    private var pending: [Entry] = []
+    private(set) var isSettling = false
+    var isEmpty: Bool { pending.isEmpty }
+    var hasReady: Bool { pending.first?.allowed == true }
+    mutating func append(_ direction: String) { pending.append(Entry(id: UUID(), direction: direction, allowed: true)) }
+    mutating func reserve(_ direction: String) -> UUID {
+        let id = UUID(); pending.append(Entry(id: id, direction: direction, allowed: nil)); return id
+    }
+    @discardableResult mutating func resolve(_ id: UUID, allowed: Bool) -> Bool {
+        guard let index = pending.firstIndex(where: { $0.id == id && $0.allowed == nil }) else { return false }
+        if allowed { pending[index].allowed = true } else { pending.remove(at: index) }
+        return true
+    }
+    mutating func takeNext() -> String? {
+        guard !isSettling, hasReady else { return nil }
+        return pending.removeFirst().direction
+    }
+    mutating func beginSettling() { isSettling = true }
+    mutating func endSettling() { isSettling = false }
+    // Decoration may be interrupted without losing accepted turns.
+    mutating func interruptDecoration() { isSettling = false }
+    mutating func removeAll() { pending.removeAll(); isSettling = false }
+}
+struct ReadingAnnotation: Identifiable, Codable, Equatable, Sendable {
+    var id: UUID = UUID()
+    var anchor: AnnotationAnchor
+    var selectedText: String?
+    var context: String?
+    var note: String
+    var color: String?
+    var style: String? = nil
+    /// A content fingerprint enables an eventual renderer to detect changed editions.
+    /// Unknown is not proof that an anchor is safe to apply.
+    var contentFingerprint: String? = nil
+    var created: Date = Date()
+    var modified: Date = Date()
+
+    func availablePage(fingerprint: String?, pageCount: Int) -> Int? {
+        guard let fingerprint, let saved = contentFingerprint, saved == fingerprint else { return nil }
+        let page: Int
+        switch anchor {
+        case .page(let index): page = index
+        case .pdf(let index, let rectangles):
+            guard !rectangles.isEmpty, rectangles.allSatisfy(\.isValid) else { return nil }
+            page = index
+        case .epub: return nil
+        }
+        guard page >= 0, page < pageCount else { return nil }
+        return page
+    }
+    func availableEPUB(fingerprint: String?) -> String? {
+        guard let fingerprint, let saved = contentFingerprint, saved == fingerprint,
+              case .epub(let cfi) = anchor, cfi.hasPrefix("epubcfi("), cfi.hasSuffix(")"), cfi.count <= 8192 else { return nil }
+        return cfi
+    }
+}
+
+/// Export is an explicit user action and does not change local reading data.
+enum AnnotationExport {
+    private struct Archive: Codable {
+        let version: Int
+        let title: String
+        let format: BookFormat
+        let annotations: [ReadingAnnotation]
+        let bookmarks: [Bookmark]
+    }
+    static func json(title: String, format: BookFormat, annotations: [ReadingAnnotation], bookmarks: [Bookmark]) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(Archive(version: 1, title: title, format: format, annotations: annotations, bookmarks: bookmarks))
+    }
+    static func markdown(title: String, format: BookFormat, annotations: [ReadingAnnotation], bookmarks: [Bookmark]) -> Data {
+        func quoted(_ value: String) -> String {
+            value.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+                .components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n")
+        }
+        func pageLabel(_ index: Int) -> String {
+            guard index >= 0, index < Int.max else { return "Invalid page index: \(index)" }
+            return "Page \(index + 1)"
+        }
+        var lines = ["# Reading notes", "", quoted(title), ""]
+        for annotation in annotations.sorted(by: { $0.created < $1.created }) {
+            let location: String
+            switch annotation.anchor {
+            case .epub(let cfi): location = "EPUB location: \(cfi)"
+            case .pdf(let page, _), .page(let page): location = pageLabel(page)
+            }
+            lines += ["## Annotation", "", quoted(location), ""]
+            if let selected = annotation.selectedText, !selected.isEmpty { lines += ["Selected text:", "", quoted(selected), ""] }
+            if let context = annotation.context, !context.isEmpty { lines += ["Context:", "", quoted(context), ""] }
+            if !annotation.note.isEmpty { lines += ["Note:", "", quoted(annotation.note), ""] }
+        }
+        for bookmark in bookmarks {
+            let location = format == .epub ? (bookmark.position.cfi ?? "Location unavailable") : pageLabel(bookmark.position.page)
+            lines += ["## Bookmark", "", quoted(bookmark.name), "", quoted(location), ""]
+        }
+        return Data(lines.joined(separator: "\n").utf8)
+    }
+}
 struct ReaderPreferences: Codable, Equatable {
     var theme = "light"
     var font = "Georgia"
@@ -79,9 +241,10 @@ struct ReaderPreferences: Codable, Equatable {
     var lineHeight = 1.6
     var margin = 24.0
     var scrolling = false
+    var originalFormatting = false
     var pageTransition = "slide"
     var pageTapZoneFraction = 0.2
-    private enum CodingKeys: String, CodingKey { case theme, font, fontSize, lineHeight, margin, scrolling, pageTransition, pageTapZoneFraction }
+    private enum CodingKeys: String, CodingKey { case theme, font, fontSize, lineHeight, margin, scrolling, originalFormatting, pageTransition, pageTapZoneFraction }
     init() {}
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -91,6 +254,7 @@ struct ReaderPreferences: Codable, Equatable {
         lineHeight = try values.decodeIfPresent(Double.self, forKey: .lineHeight) ?? 1.6
         margin = try values.decodeIfPresent(Double.self, forKey: .margin) ?? 24
         scrolling = try values.decodeIfPresent(Bool.self, forKey: .scrolling) ?? false
+        originalFormatting = try values.decodeIfPresent(Bool.self, forKey: .originalFormatting) ?? false
         pageTransition = try values.decodeIfPresent(String.self, forKey: .pageTransition) ?? "slide"
         pageTapZoneFraction = ReaderTapAction.edgeFraction(try values.decodeIfPresent(Double.self, forKey: .pageTapZoneFraction) ?? 0.2)
     }
@@ -122,7 +286,7 @@ enum ReaderPagination {
         return "\(estimated ? "About page" : "Page") \(page(at: fraction, total: total)) of \(total)"
     }
 }
-struct PreparedBook: Identifiable { var id: String { book.id }; var book: Book; var directory: URL; var document: URL; var images: [URL]; var position: ReadingPosition }
+struct PreparedBook: Identifiable { var id: String { book.id }; var book: Book; var directory: URL; var document: URL; var images: [URL]; var position: ReadingPosition; var hasDurableSidecars = false }
 enum ReaderError: LocalizedError {
     case message(String)
     var errorDescription: String? { if case .message(let value) = self { return value }; return nil }
@@ -179,5 +343,18 @@ enum ReaderTurnDecision {
         if translation * velocity < 0 && abs(velocity) > 180 { return false }
         let projected = abs(translation) + max(0, (translation < 0 ? -velocity : velocity)) * 0.14
         return projected >= width * 0.35
+    }
+}
+
+/// A dictionary action is offered only for one linguistic word, not a passage.
+enum ReaderDictionary {
+    static func term(_ text: String) -> String? {
+        guard text.utf16.count <= 256 else { return nil }
+        var words: [String] = []
+        text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: .byWords) { word, _, _, stop in
+            if let word { words.append(word) }
+            if words.count > 1 { stop = true }
+        }
+        return words.count == 1 ? words[0] : nil
     }
 }

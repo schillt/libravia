@@ -22,6 +22,7 @@ struct LibraryLandingView: View {
             VStack(alignment: .leading, spacing: 24) {
                 if let status = model.status { Label(status, systemImage: "info.circle").foregroundStyle(.secondary) }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 145, maximum: 240), spacing: 14)], spacing: 14) {
+                    destination("On My Device", icon: "internaldrive") { OnDeviceLibraryView() }
                     destination("Authors", icon: "person.2") { LibraryDirectoryView(kind: .authors, scope: scope) }
                     destination("Collections", icon: "square.stack") { LibraryDirectoryView(kind: .collections, scope: scope) }
                     destination("Genres", icon: "tag") { LibraryDirectoryView(kind: .genres, scope: scope) }
@@ -49,6 +50,7 @@ struct LibraryLandingView: View {
             }.padding(20)
         }
         .appSurface().navigationTitle("Library")
+        .profileToolbar()
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -64,7 +66,6 @@ struct LibraryLandingView: View {
                     .accessibilityValue(scope.libraries.map(\.name).joined(separator: ", "))
                 }
             }
-            ToolbarItem(placement: .primaryAction) { ProfileButton() }
         }
         .refreshable { await model.loadLibraries(); revision = UUID() }
         .task(id: requestKey) {
@@ -168,6 +169,7 @@ private struct LibraryDirectoryView: View {
             }
         }
         .appSurface().navigationTitle(kind.rawValue)
+        .profileToolbar()
         .searchable(text: $query, prompt: "Find \(kind.rawValue.lowercased())")
         .task(id: pageKey) {
             pageTask?.cancel(); items = []; offset = 0; total = 0; failure = nil; loading = false

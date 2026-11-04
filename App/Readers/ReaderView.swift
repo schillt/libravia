@@ -1,16 +1,17 @@
 import SwiftUI
 import Observation
+import UniformTypeIdentifiers
 #if os(iOS)
 import UIKit
 #endif
 
 struct ReaderCapabilities { let textSearch: Bool; let reflow: Bool; init(format: BookFormat) { textSearch = format == .epub || format == .pdf; reflow = format == .epub } }
-enum ReaderPanel: String { case contents, appearance, search }
 enum ReaderAdjustment: String, CaseIterable, Identifiable {
     case textSize = "Text size", lineSpacing = "Line spacing", margins = "Margins", edgeWidth = "Edge width"
     var id: String { rawValue }
 }
 enum ReaderSearchState { case idle, searching, results, empty, failed }
+struct EPUBSelection: Equatable, Sendable { var cfi: String; var text: String; var context: String? = nil }
 struct ReaderLink: Identifiable { var id: String; var title: String; var context: String? = nil }
 struct ReaderChapter: Identifiable {
     var id: Int { number }
@@ -27,7 +28,7 @@ struct ReaderChapter: Identifiable {
     var viewportInsets = EdgeInsets()
     var pageCount = 0
     var currentChapter: String?
-    var chapterTitle = "Reading"
+    var chapterTitle = ""
     var chapterPage = 0
     var chapterPageCount = 0
     var bookPage = 0
@@ -44,6 +45,18 @@ struct ReaderChapter: Identifiable {
     var controlsVisible = false
     var returnPosition: ReadingPosition?
     var navigationError = false
+    var epubSelection: EPUBSelection?
+    var epubSelectionActive = false
+    var highlighterColor: String? = nil
+    #if os(macOS)
+    var sidebarPaperWidth: Double?
+    var reflowSoftening = false
+    var reflowCovering = false
+    #endif
+    var selectionMenuAction: ((Bool, EPUBSelection) -> Void)?
+    var annotationAction: ((UUID) -> Void)?
+    var highlighterAction: ((EPUBSelection) -> Void)?
+    var pdfSelection: PDFTextSelection?
     func cancelSearch() { searchID = UUID().uuidString; command?("cancelSearch", nil); searching = false; if searchState == .searching { searchState = .idle } }
     func completeSearch(_ links: [ReaderLink], id: String) { guard id == searchID else { return }; results = links; searching = false; searchState = links.isEmpty ? .empty : .results }
     var pageTapZoneFraction = 0.2
@@ -54,6 +67,7 @@ struct ReaderChapter: Identifiable {
         case .controls: controlsVisible.toggle()
         }
     }
+    var fixedLayout = false
     var ready = false
     var loadingStatus = "Opening book…"
     var error: String?
@@ -71,6 +85,7 @@ struct ReaderView: View {
     let prepared: PreparedBook
     private let onContentReady: (Bool) -> Void
     @State private var controller: ReaderController
+    @State private var originalFormatting = false
     @State private var panel: ReaderPanel?
     @State private var adjustment: ReaderAdjustment?
     @State private var appearanceDetent: PresentationDetent = .medium
@@ -82,9 +97,41 @@ struct ReaderView: View {
     @State private var searchKeyboardVisible = false
     @State private var searchRevealTask: Task<Void, Never>?
     @FocusState private var searchFocused: Bool
+    #if os(macOS)
+    @FocusState private var highlighterToolbarFocused: Bool
+    // Preserve the outgoing pane while the native inspector animates closed.
+    @State private var macSidebarDestination: ReaderPanel = .contents
+    @Environment(\.controlActiveState) private var controlActiveState
+    #endif
     @Namespace private var glassNamespace
     @State private var navigationTab = 0
     @State private var bookmarkFeedback = ""
+    @State private var editingBookmark: Bookmark?
+    @State private var bookmarkName = ""
+    @State private var editingNote: ReadingAnnotation?
+    @State private var newHighlightNote: ReadingAnnotation?
+    @State private var noteToDelete: ReadingAnnotation?
+    @State private var annotationSearch = ""
+    #if os(macOS)
+    @State private var lastHighlighterColor = "yellow"
+    @State private var showingHighlighterPalette = false
+    #endif
+    // WebKit can clear selection as a native toolbar receives the tap. Keep
+    // the captured passage briefly so that same tap can complete its action.
+    @State private var recentEPUBSelection = false
+    @State private var selectionExpiryTask: Task<Void, Never>?
+    @State private var bookFingerprint: String?
+    @State private var fingerprintSourceKey: String?
+    @State private var fingerprintAttempt = 0
+    @State private var fingerprintFailed = false
+    @State private var exportDocument: ReadingDataDocument?
+    @State private var exportType: UTType = .json
+    @State private var showingExport = false
+    private var currentFingerprintSourceKey: String { prepared.id + "\u{0}" + prepared.directory.path }
+    private var verifiedFingerprint: String? { fingerprintSourceKey == currentFingerprintSourceKey ? bookFingerprint : nil }
+    private var canHighlightEPUBSelection: Bool {
+        controller.epubSelection != nil && (controller.epubSelectionActive || recentEPUBSelection)
+    }
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -95,10 +142,11 @@ struct ReaderView: View {
     @State private var scrubbing = false
     @AppStorage("readerKeepTitleVisible") private var keepTitleVisible = true
     @AppStorage("readerKeepProgressVisible") private var keepProgressVisible = true
+    @AppStorage("readerKeepScreenAwake") private var keepScreenAwake = true
     @ScaledMetric(relativeTo: .caption) private var headerLineHeight = 18.0
     @ScaledMetric(relativeTo: .caption2) private var progressLineHeight = 16.0
-    private var headerGutter: Double { isDesktop ? max(28, headerLineHeight + 8) : max(44, headerLineHeight * 2 + 4) }
-    private var footerGutter: Double { 44 + progressLineHeight }
+    private var headerGutter: Double { isDesktop ? max(44, headerLineHeight * 2 + 8) : max(76, headerLineHeight * 3 + 20) }
+    private var footerGutter: Double { 64 + progressLineHeight }
     private var isDesktop: Bool {
         #if os(macOS)
         true
@@ -107,16 +155,16 @@ struct ReaderView: View {
         #endif
     }
     private var readerChromeVisible: Bool { controller.controlsVisible || voiceOver }
-    private var macSidebarVisible: Bool { isDesktop && readerChromeVisible && (searchVisible || panel != nil) }
+    private var macSidebarVisible: Bool { isDesktop && (searchVisible || panel != nil) }
     private var pageContainsInfo: Bool { prepared.book.format == .epub && !model.preferences.scrolling }
     private func pageChrome(safeInsets: EdgeInsets) -> ReaderPageChrome {
         ReaderPageChrome(enabled: pageContainsInfo, showChapter: keepTitleVisible, showProgress: keepProgressVisible,
-                         top: headerGutter + safeInsets.top, bottom: isDesktop ? 20 : max(54, progressLineHeight + 32) + safeInsets.bottom,
+                         top: headerGutter + safeInsets.top, bottom: isDesktop ? 32 : max(68, progressLineHeight + 44) + safeInsets.bottom,
                          safeTop: safeInsets.top, safeBottom: safeInsets.bottom,
                          textSize: max(12, progressLineHeight - 4),
                          softEdges: !isDesktop && model.preferences.pageTransition == "curl" && !reduceTransparency && contrast != .increased)
     }
-    private var readerControlHeight: Double { isDesktop ? 36 : 44 }
+    private var readerControlHeight: Double { isDesktop ? 44 : 56 }
     private func closeReader() {
         #if os(macOS)
         if let closeReaderWindow { closeReaderWindow(); return }
@@ -138,10 +186,24 @@ struct ReaderView: View {
           readerContainer {
             readerSurface(chrome: pageChrome(safeInsets: pageInsets))
                 #if os(macOS)
-                .background(MacReaderInput(chromeVisible: readerChromeVisible, canTurn: { controller.ready && showsPageTurnButtons },
+                .background(MacReaderInput(chromeVisible: readerChromeVisible, paper: readerBackground, inspectorVisible: macSidebarVisible, canTurn: { controller.ready && showsPageTurnButtons },
                                            turn: { controller.command?($0, nil) },
                                            trackpad: prepared.book.format == .epub ? { controller.command?("trackpad", $0) } : nil))
+                .overlay {
+                    GeometryReader { viewport in
+                        if !controller.reflowCovering, let heldWidth = controller.sidebarPaperWidth, viewport.size.width > heldWidth {
+                            // The native viewport can expand before WebKit's
+                            // composited page does. Cover only that new strip.
+                            readerBackground
+                                .frame(width: viewport.size.width - heldWidth, height: viewport.size.height)
+                                .offset(x: heldWidth)
+                        }
+                    }
+                    .allowsHitTesting(false).accessibilityHidden(true)
+                    .transaction { $0.animation = nil }
+                }
                 #endif
+                #if os(iOS)
                 .mask {
                     if prepared.book.format == .epub && model.preferences.scrolling && !reduceTransparency && contrast != .increased {
                         VStack(spacing: 0) {
@@ -151,10 +213,11 @@ struct ReaderView: View {
                         }
                     } else { Rectangle().fill(.white) }
                 }
+                #endif
                 // Keep the document viewport identical when chrome appears or hides.
                 // Side panels and text-size changes deliberately reflow; visibility does not.
                 .padding(.top, pageContainsInfo ? 0 : headerGutter)
-                .padding(.bottom, pageContainsInfo ? (isDesktop ? 52 : 0) : footerGutter)
+                .padding(.bottom, pageContainsInfo ? (isDesktop ? 64 : 0) : footerGutter)
                 .background(readerBackground.ignoresSafeArea())
                 .overlay {
                     if searchVisible && !isDesktop {
@@ -175,16 +238,18 @@ struct ReaderView: View {
                                 .accessibilityLabel("Back to library").buttonStyle(.plain).glassEffect(readerGlass.interactive(), in: Circle())
                         }
                         Button {
-                            controller.controlsVisible.toggle()
+                            toggleReaderControls()
                             controlsActivity = UUID()
                         } label: {
                             VStack(spacing: 2) {
-                                if !isDesktop && (controller.controlsVisible || voiceOver) {
-                                    Text(prepared.book.title).font(.caption2).foregroundStyle(readerForeground.opacity(0.85))
+                                if !isDesktop && (controller.controlsVisible || voiceOver) && chapterHeaderLabel != prepared.book.title {
+                                    Text(prepared.book.title).font(.caption).foregroundStyle(readerForeground.opacity(0.85))
                                         .lineLimit(1).transition(.opacity)
                                 }
-                                Text(chapterHeaderLabel).font(.caption.weight(.semibold)).lineLimit(1)
-                                    .opacity(pageContainsInfo && keepTitleVisible ? 0 : 1)
+                                Text(chapterHeaderLabel).font(.caption.weight(.semibold))
+                                    .lineLimit(!isDesktop && readerChromeVisible ? 2 : 1)
+                                    .multilineTextAlignment(.center)
+                                    .opacity(pageContainsInfo && keepTitleVisible && (isDesktop || !readerChromeVisible) ? 0 : 1)
                                 if controller.controlsVisible, !bookmarkFeedback.isEmpty {
                                     Text(bookmarkFeedback).font(.caption2).foregroundStyle(readerSecondaryForeground).lineLimit(1)
                                 }
@@ -193,7 +258,7 @@ struct ReaderView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("\(chapterHeaderLabel), \(prepared.book.title)")
+                        .accessibilityLabel([chapterHeaderLabel, prepared.book.title].filter { !$0.isEmpty }.joined(separator: ", "))
                         .accessibilityHint("Show or hide reader controls")
                         .opacity(readerChromeVisible || (!isDesktop && !pageContainsInfo && keepTitleVisible) ? 1 : 0)
                         .allowsHitTesting(readerChromeVisible || (!isDesktop && !pageContainsInfo && keepTitleVisible))
@@ -205,7 +270,7 @@ struct ReaderView: View {
                         }
                         }
                     }}.foregroundStyle(readerForeground).padding(.horizontal, 16).frame(height: headerGutter).padding(.top, pageInsets.top)
-                    .background(pageContainsInfo ? .clear : readerBackground)
+                    .background(pageContainsInfo && (isDesktop || !readerChromeVisible) ? .clear : readerBackground)
                     }
                 }
                 .overlay(alignment: .bottom) {
@@ -216,7 +281,7 @@ struct ReaderView: View {
                             bottomChromeFade.frame(height: footerGutter).ignoresSafeArea(edges: .bottom)
                         }
                         readerControls.frame(maxWidth: 540)
-                            .background(isDesktop && readerChromeVisible ? readerBackground : .clear, in: RoundedRectangle(cornerRadius: 28))
+                            .background(readerChromeVisible && (isDesktop || pageContainsInfo) ? readerBackground : .clear, in: RoundedRectangle(cornerRadius: 28))
                             .padding(.horizontal, isDesktop ? 24 : 16).padding(.bottom, (isDesktop ? 18 : 10) + pageInsets.bottom)
                             .opacity((!searchVisible || isDesktop) && readerChromeVisible ? 1 : 0)
                             .allowsHitTesting((!searchVisible || isDesktop) && readerChromeVisible)
@@ -244,7 +309,7 @@ struct ReaderView: View {
                             Group {
                                 if panel == .appearance { appearance }
                                 else { contents }
-                            }.navigationTitle(panel == .appearance ? "Appearance" : "Contents")
+                            }.navigationTitle(panel == .appearance ? "Appearance" : (navigationTab == 2 ? "Notes & Highlights" : "Contents"))
                             #if os(macOS)
                             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Close") { panel = nil } } }
                             #endif
@@ -263,6 +328,13 @@ struct ReaderView: View {
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .height(compactPanelHeight)))
             }
+            .sheet(item: $newHighlightNote) { note in
+                PageNoteEditor(note: note, supportsUnderline: prepared.book.format == .epub, delete: annotationRemoval(for: note)) { updated in
+                    guard let store = model.readingStore(for: prepared.book) else { return false }
+                    do { try store.saveAnnotation(updated, id: prepared.id); model.bookmarksRevision += 1; return true }
+                    catch { model.error = UserFacingError.message(error); return false }
+                }
+            }
           }
           #if os(iOS)
           .frame(width: geometry.size.width, height: geometry.size.height)
@@ -272,37 +344,47 @@ struct ReaderView: View {
           #if os(macOS)
           .frame(minWidth: 0, maxWidth: .infinity)
           .toolbarVisibility(readerChromeVisible ? .visible : .hidden, for: .windowToolbar)
+          .toolbarBackground(readerBackground, for: .windowToolbar)
+          .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
           .toolbar {
+              if prepared.book.format == .epub {
+                  ToolbarItem(placement: .primaryAction) {
+                      macHighlighterToggle.disabled(!controller.ready || verifiedFingerprint == nil)
+                  }
+                  ToolbarItem(placement: .primaryAction) {
+                      macHighlighterPaletteButton.disabled(!controller.ready || verifiedFingerprint == nil)
+                  }
+                  ToolbarSpacer(.fixed, placement: .primaryAction)
+              }
+              if prepared.book.format == .pdf, controller.pdfSelection != nil {
+                  ToolbarItem(placement: .primaryAction) {
+                      Button("Highlight selection", systemImage: "highlighter", action: highlightPDFSelection)
+                          .disabled(verifiedFingerprint == nil)
+                  }
+                  ToolbarSpacer(.fixed, placement: .primaryAction)
+              }
               ToolbarItemGroup(placement: .primaryAction) {
+                  macSidebarToggle("Appearance", systemImage: "textformat.size", target: .appearance)
+                  macSidebarToggle("Highlights", systemImage: "note.text", target: .contents, navigation: 2)
+                  macSidebarToggle("Contents", systemImage: "list.bullet", target: .contents)
                   if ReaderCapabilities(format: prepared.book.format).textSearch {
-                      Button("Search book", systemImage: "magnifyingglass", action: openSearch).disabled(!controller.ready)
+                      macSidebarToggle("Search book", systemImage: "magnifyingglass", target: .search)
+                          .disabled(!controller.ready)
                   }
-                  Button("Appearance", systemImage: "textformat.size") { panel = .appearance; closeSearch() }
-                  Button(searchVisible || panel != nil ? "Hide reader sidebar" : "Show reader sidebar", systemImage: "sidebar.right") {
-                      if searchVisible || panel != nil { closeSearch(); panel = nil }
-                      else { navigationTab = 0; panel = .contents }
-                  }
-                  .foregroundStyle(searchVisible || panel != nil ? Color.accentColor : readerForeground)
-                  .accessibilityValue(searchVisible || panel != nil ? "Sidebar open" : "Sidebar closed")
               }
           }
-          #endif
-          #if os(macOS)
-          Group {
-          if macSidebarVisible {
-              // Reserve reading width without NSSplitView's full-height divider.
-              // The glass panel floats on the same canvas and never covers text.
-              macSidebar
-                  .frame(width: 340)
-                  .layoutPriority(1)
-                  .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94, anchor: .topTrailing)).combined(with: .move(edge: .trailing)))
-          }
-          }
-          // Animate the glass only. The outer reservation snaps to its final
-          // width so WebKit receives one resize instead of every spring frame.
-          .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: macSidebarVisible)
-          .frame(width: macSidebarVisible ? 340 : 0)
-          .clipped()
+          .inspector(isPresented: Binding(
+              get: { macSidebarVisible },
+              set: { visible in
+                  guard !visible, macSidebarVisible else { return }
+                  animateSidebarChange {
+                      if searchVisible { closeSearch(sidebarWillRemainVisible: true) }
+                      panel = nil
+                  }
+              })) {
+                  macSidebar
+                      .inspectorColumnWidth(min: 260, ideal: 320, max: 420)
+              }
           #endif
           if !isDesktop && usesSidebar && panel == .contents {
               Divider()
@@ -321,6 +403,11 @@ struct ReaderView: View {
           }
           .onChange(of: usesSidebar, initial: true) { _, value in wideContents = value }
         }
+        .background(readerBackground.ignoresSafeArea())
+        .readerScreenAwake(keepScreenAwake && controller.ready && controller.error == nil)
+        #if os(macOS)
+        .containerBackground(readerBackground, for: .window)
+        #endif
         #if os(iOS)
         .ignoresSafeArea(.container, edges: pageContainsInfo ? .vertical : [])
         #endif
@@ -329,31 +416,50 @@ struct ReaderView: View {
             canTurn: controller.ready && showsPageTurnButtons && (isDesktop || (panel == nil && !searchVisible)),
             canSearch: controller.ready && ReaderCapabilities(format: prepared.book.format).textSearch,
             canBookmark: controller.ready,
-            canIncreaseText: prepared.book.format == .epub && model.preferences.fontSize < 36,
-            canDecreaseText: prepared.book.format == .epub && model.preferences.fontSize > 14,
-            controls: { controller.controlsVisible.toggle() },
+            canIncreaseText: prepared.book.format == .epub && !originalFormatting && !controller.fixedLayout && model.preferences.fontSize < 36,
+            canDecreaseText: prepared.book.format == .epub && !originalFormatting && !controller.fixedLayout && model.preferences.fontSize > 14,
+            controls: { toggleReaderControls() },
             previous: { controller.command?("previous", nil) },
             next: { controller.command?("next", nil) },
-            contents: { controller.controlsVisible = true; navigationTab = 0; panel = panel == .contents ? nil : .contents },
-            appearance: { controller.controlsVisible = true; panel = .appearance },
-            search: { openSearch() },
+            contents: { if isDesktop { toggleMacSidebar(.contents) } else { controller.controlsVisible = true; navigationTab = 0; panel = panel == .contents ? nil : .contents } },
+            appearance: { if isDesktop { toggleMacSidebar(.appearance) } else { controller.controlsVisible = true; panel = .appearance } },
+            search: { if isDesktop { toggleMacSidebar(.search) } else { openSearch() } },
             increaseText: { model.preferences.fontSize = min(36, model.preferences.fontSize + 1) },
             decreaseText: { model.preferences.fontSize = max(14, model.preferences.fontSize - 1) },
             bookmark: { if let bookmark = currentBookmark { removeBookmark(bookmark) } else { addBookmark() } },
-            close: { if searchVisible { closeSearch() } else if panel != nil { panel = nil } else { closeReader() } }
+            close: { closeReaderContext() }
         ))
+        #if os(macOS)
+        .onExitCommand(perform: closeReaderContext)
+        #endif
         .alert("Chapter unavailable", isPresented: Binding(get: { controller.navigationError }, set: { controller.navigationError = $0 })) {
             Button("OK", role: .cancel) { }
         } message: {
             Text("This chapter could not be opened. Your current reading position is unchanged.")
         }
         .preferredColorScheme(darkReader ? .dark : .light)
-        .onAppear { controller.changed = { model.savePosition($0, book: prepared.book) }; scrubFraction = progressFraction; controller.pageTapZoneFraction = model.preferences.pageTapZoneFraction }
+        .onAppear { originalFormatting = model.readingStore(for: prepared.book)?.usesOriginalFormatting(bookID: prepared.id) ?? false; controller.changed = { model.savePosition($0, book: prepared.book) }; configureAnnotationActions(); scrubFraction = progressFraction; controller.pageTapZoneFraction = model.preferences.pageTapZoneFraction }
         .onChange(of: model.preferences.pageTapZoneFraction) { _, width in controller.pageTapZoneFraction = width }
         .onChange(of: controller.ready) { _, ready in if ready { onContentReady(true) } }
+        .onChange(of: controller.ready) { _, ready in if !ready { controller.highlighterColor = nil } }
+        .onChange(of: controller.ready) { _, ready in if ready { updateEPUBHighlights() } }
+        .onChange(of: verifiedFingerprint) { _, _ in configureAnnotationActions(); updateEPUBHighlights() }
+        .onChange(of: model.bookmarksRevision) { _, _ in updateEPUBHighlights() }
         .onChange(of: controller.error) { _, error in if error != nil { onContentReady(false) } }
         .onChange(of: controller.controlsVisible) { _, visible in
             controlsActivity = UUID()
+        }
+        .onChange(of: controller.pdfSelection) { _, _ in controlsActivity = UUID() }
+        .onChange(of: controller.epubSelectionActive) { _, active in
+            controlsActivity = UUID(); selectionExpiryTask?.cancel()
+            if active { recentEPUBSelection = true }
+            else {
+                selectionExpiryTask = Task { @MainActor in
+                    do { try await Task.sleep(for: .milliseconds(800)) } catch { return }
+                    guard !Task.isCancelled else { return }
+                    recentEPUBSelection = false
+                }
+            }
         }
         .onChange(of: controller.bookPage) { _, _ in if !scrubbing { scrubFraction = progressFraction } }
         .onChange(of: controller.bookPageCount) { _, _ in if !scrubbing { scrubFraction = progressFraction } }
@@ -363,11 +469,14 @@ struct ReaderView: View {
         #endif
         .onChange(of: voiceOver) { _, _ in controlsActivity = UUID() }
         .onChange(of: searchVisible) { _, visible in controlsActivity = UUID(); searchFocused = visible }
+        .task(id: "\(currentFingerprintSourceKey)|\(fingerprintAttempt)") {
+            if prepared.book.format == .pdf { await verifyBookFingerprint() }
+        }
         .task(id: controlsActivity) {
             #if os(iOS)
-            guard controller.controlsVisible, !voiceOver, panel == nil, !scrubbing, !searchVisible else { return }
+            guard controller.controlsVisible, !voiceOver, panel == nil, !scrubbing, !searchVisible, controller.pdfSelection == nil, !controller.epubSelectionActive else { return }
             do { try await Task.sleep(for: .seconds(4)) } catch { return }
-            guard !Task.isCancelled, panel == nil, !scrubbing, !voiceOver, !searchVisible else { return }
+            guard !Task.isCancelled, panel == nil, !scrubbing, !voiceOver, !searchVisible, controller.pdfSelection == nil, !controller.epubSelectionActive else { return }
             controller.controlsVisible = false
             #endif
         }
@@ -378,7 +487,17 @@ struct ReaderView: View {
         .onChange(of: compactPanelHeight) { _, height in
             if adjustment != nil { appearanceDetent = .height(height) }
         }
-        .onDisappear { searchRevealTask?.cancel(); controller.cancelSearch(); controller.changed = nil; Task { await model.flushProgress() } }
+        .onDisappear { searchRevealTask?.cancel(); selectionExpiryTask?.cancel(); controller.cancelSearch(); controller.changed = nil; controller.selectionMenuAction = nil; controller.annotationAction = nil; controller.highlighterAction = nil; controller.highlighterColor = nil; Task { await model.flushProgress() } }
+        .task(id: "\(currentFingerprintSourceKey)|\(fingerprintAttempt)") {
+            guard prepared.book.format == .epub, verifiedFingerprint == nil else { return }
+            let sourceKey = currentFingerprintSourceKey
+            fingerprintFailed = false
+            do {
+                let value = try await BookFingerprint.epub(directory: prepared.directory, hasDurableSidecars: prepared.hasDurableSidecars)
+                guard !Task.isCancelled, sourceKey == currentFingerprintSourceKey else { return }
+                bookFingerprint = value; fingerprintSourceKey = sourceKey
+            } catch { if !Task.isCancelled, sourceKey == currentFingerprintSourceKey { fingerprintFailed = true } }
+        }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             searchKeyboardVisible = true
@@ -418,14 +537,14 @@ struct ReaderView: View {
                 .allowsHitTesting(false)
                 .transition(.opacity)
             }
-            HStack(spacing: 2) {
+            HStack(spacing: isDesktop ? 6 : 2) {
                         if showsPageTurnButtons {
-                        Button { controller.command?("previous", nil) } label: { Image(systemName: "chevron.left").frame(width: isDesktop ? 32 : 44, height: readerControlHeight) }
+                        Button { controller.command?("previous", nil) } label: { Image(systemName: "chevron.left").frame(width: isDesktop ? 40 : 44, height: readerControlHeight) }
                             .accessibilityLabel("Previous page").keyboardShortcut(!isDesktop && panel == nil && !searchVisible ? KeyboardShortcut(.leftArrow, modifiers: []) : nil)
                         }
-                        VStack(spacing: 0) {
+                        VStack(spacing: isDesktop ? 8 : 6) {
                             Text(bookPageLabel)
-                                .font(.caption2).monospacedDigit().foregroundStyle(readerSecondaryForeground)
+                                .font(.caption).monospacedDigit().foregroundStyle(readerSecondaryForeground)
                                 .lineLimit(1)
                             Slider(value: Binding(get: { scrubFraction }, set: { value in
                                 scrubFraction = value
@@ -439,19 +558,27 @@ struct ReaderView: View {
                             .disabled(prepared.book.format == .epub && !model.preferences.scrolling && controller.bookPageCount == 0)
                             .accessibilityLabel("Book position")
                             .accessibilityValue(bookPageLabel)
-                        }.padding(.horizontal, 4).frame(maxWidth: .infinity)
+                        }.padding(.horizontal, 4).padding(.vertical, isDesktop ? 6 : 0).frame(maxWidth: .infinity)
                         if showsPageTurnButtons {
-                        Button { controller.command?("next", nil) } label: { Image(systemName: "chevron.right").frame(width: isDesktop ? 32 : 44, height: readerControlHeight) }
+                        Button { controller.command?("next", nil) } label: { Image(systemName: "chevron.right").frame(width: isDesktop ? 40 : 44, height: readerControlHeight) }
                             .accessibilityLabel("Next page").keyboardShortcut(!isDesktop && panel == nil && !searchVisible ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
                         }
                         if !isDesktop {
                         Rectangle().fill(readerSecondaryForeground.opacity(0.25)).frame(width: 1, height: 32).padding(.horizontal, 4)
                         Menu {
                             Button("Appearance and page turns", systemImage: "textformat.size") { panel = .appearance }
+                            if prepared.book.format == .epub, let selection = controller.epubSelection {
+                                Button("Highlight “\(String(selection.text.prefix(48)))”", systemImage: "highlighter") { addEPUBHighlight() }
+                                    .disabled(!canHighlightEPUBSelection || verifiedFingerprint == nil)
+                            }
                             if currentBookmark == nil {
                                 Button("Bookmark this page", systemImage: "bookmark.fill") { addBookmark() }
                             }
                             Button("Bookmarks", systemImage: "bookmark") { navigationTab = 1; panel = .contents }
+                            if prepared.book.format == .pdf, controller.pdfSelection != nil {
+                                Button("Highlight selection", systemImage: "highlighter", action: highlightPDFSelection).disabled(verifiedFingerprint == nil)
+                            }
+                            Button("Notes", systemImage: "note.text") { navigationTab = 2; panel = .contents }
                             Button("Contents", systemImage: "list.bullet") { navigationTab = 0; panel = .contents }
                             if let bookmark = currentBookmark {
                                 Button("Remove bookmark here", systemImage: "bookmark.slash") { removeBookmark(bookmark) }
@@ -503,7 +630,10 @@ struct ReaderView: View {
     }
     private var chapterHeaderLabel: String {
         if prepared.book.format == .epub {
-            return controller.chapterTitle
+            let title = controller.chapterTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty { return title }
+            let chapter = currentChapter?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return chapter.isEmpty ? prepared.book.title : chapter
         }
         return "Page \(controller.position.page + 1)"
     }
@@ -578,13 +708,13 @@ struct ReaderView: View {
         } else { controller.command?("page", ReaderPagination.page(at: scrubFraction, total: controller.pageCount) - 1) }
     }
     private var currentBookmark: Bookmark? {
-        (model.store?.bookmarks[prepared.id] ?? []).first { bookmark in
+        (model.readingStore(for: prepared.book)?.bookmarks[prepared.id] ?? []).first { bookmark in
             if prepared.book.format == .epub { return bookmark.position.cfi != nil && bookmark.position.cfi == controller.position.cfi }
             return bookmark.position.page == controller.position.page
         }
     }
     private func removeBookmark(_ bookmark: Bookmark) {
-        do { try model.store?.removeBookmark(bookmark, id: prepared.id); model.bookmarksRevision += 1; bookmarkFeedback = "Bookmark removed" }
+        do { try model.readingStore(for: prepared.book)?.removeBookmark(bookmark, id: prepared.id); model.bookmarksRevision += 1; bookmarkFeedback = "Bookmark removed" }
         catch { model.error = UserFacingError.message(error); bookmarkFeedback = "Bookmark could not be removed" }
     }
     private var readerBackground: Color {
@@ -613,7 +743,12 @@ struct ReaderView: View {
     }
     @ViewBuilder private func readerContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         #if os(macOS)
-        NavigationStack { content() }
+        NavigationStack {
+            content()
+                .toolbarBackground(readerBackground, for: .windowToolbar)
+                .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+        }
+        .background(readerBackground)
         #else
         // The full-screen reader supplies its own controls. A navigation host
         // reintroduces system safe areas before the page's own reservations.
@@ -623,8 +758,12 @@ struct ReaderView: View {
     private func readerSurface(chrome: ReaderPageChrome) -> some View {
         ZStack {
             switch prepared.book.format {
-            case .epub: EPUBSurface(prepared: prepared, controller: controller, preferences: model.preferences, chrome: chrome)
-            case .pdf: PDFSurface(prepared: prepared, controller: controller)
+            case .epub:
+                EPUBSurface(prepared: prepared, controller: controller, preferences: readerPreferences, chrome: chrome)
+                    #if os(macOS)
+                    .blur(radius: controller.reflowSoftening && !reduceMotion && !reduceTransparency && contrast != .increased ? 0.7 : 0)
+                    #endif
+            case .pdf: PDFSurface(prepared: prepared, controller: controller, annotations: pdfAnnotations, fingerprint: verifiedFingerprint)
             case .cbz: ComicSurface(prepared: prepared, controller: controller)
             case .unsupported: ContentUnavailableView("Unsupported book", systemImage: "book.closed")
             }
@@ -654,12 +793,95 @@ struct ReaderView: View {
     private var appearance: some View {
         #if os(macOS)
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) { appearanceFields }
+            VStack(alignment: .leading, spacing: 16) { macAppearanceFields }
                 .frame(maxWidth: .infinity, alignment: .leading).padding(16)
         }
         #else
         Form { appearanceFields }.formStyle(.grouped)
         #endif
+    }
+    #if os(macOS)
+    @ViewBuilder private var macAppearanceFields: some View {
+        @Bindable var model = model
+        if prepared.book.format == .epub {
+            macAppearanceSection("Reading appearance") {
+                Picker("App color", selection: $model.preferences.theme) {
+                    Text("Light").tag("light"); Text("Sepia").tag("sepia"); Text("Dark").tag("dark")
+                }
+                Text("Applies to reading and browsing.").font(.caption).foregroundStyle(.secondary)
+                formattingToggle
+                Picker("Font", selection: $model.preferences.font) {
+                    Text("Georgia").tag("Georgia"); Text("System sans serif").tag("-apple-system"); Text("Palatino").tag("Palatino")
+                }.disabled(originalFormatting || controller.fixedLayout)
+            }
+            macAppearanceSection("Page layout") {
+                inlineAdjustment(.textSize)
+                inlineAdjustment(.lineSpacing)
+                inlineAdjustment(.margins)
+            }.disabled(originalFormatting || controller.fixedLayout)
+            macAppearanceSection("Navigation") {
+                Toggle("Scroll vertically", isOn: $model.preferences.scrolling)
+                if !model.preferences.scrolling {
+                    Picker("Page turn", selection: $model.preferences.pageTransition) {
+                        Text("Instant").tag("instant"); Text("Fade").tag("fade"); Text("Card swipe").tag("slide")
+                        if model.preferences.pageTransition == "curl" { Text("Page curl (Fade on Mac)").tag("curl") }
+                    }
+                    Text("Reduce Motion turns off page animations automatically.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            macAppearanceSection("Page view") {
+                HStack {
+                    Button("Zoom In") { controller.command?("zoomIn", nil) }
+                    Button("Zoom Out") { controller.command?("zoomOut", nil) }
+                }
+                HStack {
+                    Button("Fit Page") { controller.command?("fit", nil) }
+                    Button("Fit Width") { controller.command?("fitWidth", nil) }
+                }
+                TextField("Page number", value: $pageNumber, format: .number)
+                Stepper("Page \(pageNumber)", value: $pageNumber, in: 1...max(1, controller.pageCount))
+                Button("Go to Page") { controller.returnPosition = controller.position; controller.command?("page", pageNumber - 1); animateSidebarChange { panel = nil } }
+                    .disabled(pageNumber < 1 || pageNumber > controller.pageCount)
+            }
+        }
+        macAppearanceSection("While reading") {
+            Toggle("Keep chapter visible", isOn: $keepTitleVisible)
+            Toggle("Keep progress visible", isOn: $keepProgressVisible)
+            Text("Use the Reader menu or toolbar to manage reading controls.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private func macAppearanceSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(readerForeground.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+    }
+    #endif
+    private var readerPreferences: ReaderPreferences {
+        var value = model.preferences
+        value.originalFormatting = originalFormatting
+        return value
+    }
+    private var originalFormattingBinding: Binding<Bool> {
+        Binding(get: { originalFormatting }, set: { value in
+            guard let store = model.readingStore(for: prepared.book) else { model.error = "Reading preferences are unavailable."; return }
+            do { try store.setOriginalFormatting(value, bookID: prepared.id); originalFormatting = value }
+            catch { model.error = UserFacingError.message(error) }
+        })
+    }
+    private var formattingToggle: some View {
+        VStack(alignment: .leading) {
+            Toggle("Original Formatting", isOn: originalFormattingBinding).disabled(controller.fixedLayout)
+            if controller.fixedLayout {
+                Text("This fixed-layout book uses its original page design. Typography controls do not apply.").font(.caption).foregroundStyle(.secondary)
+            } else if originalFormatting {
+                Text("Uses the book's typography and layout. Font, text size, line spacing and margins do not apply.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
     @ViewBuilder private var appearanceFields: some View {
         @Bindable var model = model
@@ -671,7 +893,9 @@ struct ReaderView: View {
             if prepared.book.format == .epub {
                 Picker("App color", selection: $model.preferences.theme) { Text("Light").tag("light"); Text("Sepia").tag("sepia"); Text("Dark").tag("dark") }
                 Text("Applies to reading and browsing.").font(.caption).foregroundStyle(.secondary)
-                Picker("Font", selection: $model.preferences.font) { Text("Georgia").tag("Georgia"); Text("System sans serif").tag("-apple-system"); Text("Palatino").tag("Palatino") }
+                formattingToggle
+                Picker("Font", selection: $model.preferences.font) { Text("Georgia").tag("Georgia"); Text("System sans serif").tag("-apple-system"); Text("Palatino").tag("Palatino") }.disabled(originalFormatting || controller.fixedLayout)
+                Group {
                 #if os(macOS)
                 inlineAdjustment(.textSize)
                 inlineAdjustment(.lineSpacing)
@@ -681,6 +905,7 @@ struct ReaderView: View {
                 adjustmentButton(.lineSpacing)
                 adjustmentButton(.margins)
                 #endif
+                }.disabled(originalFormatting || controller.fixedLayout)
                 Toggle("Scroll vertically", isOn: $model.preferences.scrolling)
                 if !model.preferences.scrolling {
                     Picker("Page turn", selection: $model.preferences.pageTransition) {
@@ -705,6 +930,10 @@ struct ReaderView: View {
                 Button("Go to Page") { controller.returnPosition = controller.position; controller.command?("page", pageNumber - 1); panel = nil }.disabled(pageNumber < 1 || pageNumber > controller.pageCount)
             }
             Section("While reading") {
+                #if os(iOS)
+                Toggle("Keep Screen Awake", isOn: $keepScreenAwake)
+                Text("Prevents Auto-Lock while reading. Turn off to use system Auto-Lock and Attention Aware settings.").font(.caption).foregroundStyle(.secondary)
+                #endif
                 Toggle("Keep chapter visible", isOn: $keepTitleVisible)
                 Toggle("Keep progress visible", isOn: $keepProgressVisible)
                 Text(isDesktop ? "Use the Reader menu or toolbar to manage reading controls." : "Show controls with a tap in the center of the page.").font(.caption).foregroundStyle(.secondary)
@@ -753,7 +982,7 @@ struct ReaderView: View {
     private func inlineAdjustment(_ setting: ReaderAdjustment) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(setting.rawValue).font(.headline)
+                Text(setting.rawValue).font(.subheadline.weight(.medium))
                 Spacer()
                 Text(adjustmentValue(setting)).monospacedDigit().foregroundStyle(.secondary)
             }
@@ -796,7 +1025,7 @@ struct ReaderView: View {
                     .matchedGeometryEffect(id: "value-" + setting.id, in: appearanceNamespace)
                     .contentTransition(.numericText())
                 #if os(macOS)
-                Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                Button { animateSidebarChange { panel = nil } } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
                     .accessibilityLabel("Close appearance")
                 #endif
             }
@@ -808,22 +1037,12 @@ struct ReaderView: View {
     private var macSidebar: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(searchVisible ? "Search" : panel == .appearance ? "Appearance" : "Book navigation")
+                Text(macSidebarDestination == .search ? "Search" : macSidebarDestination == .appearance ? "Appearance" : "Book navigation")
                     .font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer()
-            }.frame(width: 260, height: 44).padding(.horizontal, 16)
-            MacReaderSidebarTabs(labels: ReaderCapabilities(format: prepared.book.format).textSearch
-                                 ? ["Contents", "Appearance", "Search"] : ["Contents", "Appearance"],
-                                 selection: Binding(
-                                    get: { searchVisible ? 2 : panel == .appearance ? 1 : 0 },
-                                    set: { value in
-                                        if value == 2 { openSearch() }
-                                        else { panel = value == 1 ? .appearance : .contents; closeSearch() }
-                                    }))
-                .frame(width: 268, height: 28)
-                .padding(.horizontal, 12).padding(.bottom, 12)
+            }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 16)
             Divider()
-            if searchVisible {
+            if macSidebarDestination == .search {
                 HStack {
                     MacReaderSearchField(text: $search, onSubmit: { runSearch() }, onCancel: { closeSearch() })
                         .frame(minWidth: 0, maxWidth: .infinity)
@@ -832,23 +1051,14 @@ struct ReaderView: View {
                         }
                     Button("Search", action: runSearch)
                         .disabled(search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }.frame(width: 268).padding(12)
-                searchResults.frame(width: 292)
-            } else if panel == .appearance {
+                }.padding(12)
+                searchResults
+            } else if macSidebarDestination == .appearance {
                 appearance.scrollContentBackground(.hidden)
             } else { contents.scrollContentBackground(.hidden) }
         }
-            // Fix the glass bounds before applying material; intrinsic widths
-            // from search/results and changing slider values must not resize it.
-            .frame(width: 292, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .top)
             .frame(maxHeight: .infinity, alignment: .top)
-            .clipped()
-            .padding(8)
-            .glassEffect(reduceTransparency || contrast == .increased ? .regular : .clear, in: RoundedRectangle(cornerRadius: 20))
-            .padding(.horizontal, 16).padding(.vertical, 12)
-            // Continue the publication canvas behind the glass instead of the inspector
-            // host's contrasting system background. Lists/forms hide their own fill.
-            .background(readerBackground.ignoresSafeArea())
             .environment(\.colorScheme, darkReader ? .dark : .light)
     }
     #endif
@@ -956,23 +1166,158 @@ struct ReaderView: View {
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
+    #if os(macOS)
+    private func macSidebarToggle(_ title: String, systemImage: String, target: ReaderPanel, navigation: Int = 0) -> some View {
+        Toggle(title, systemImage: systemImage, isOn: Binding(
+            get: { macSidebarShows(target, navigation: navigation) },
+            set: { _ in toggleMacSidebar(target, navigation: navigation) }
+        ))
+        .toggleStyle(.button)
+        .help(title)
+    }
+    private var macHighlighterToggle: some View {
+        let armed = controller.highlighterColor != nil
+        return Toggle(isOn: Binding(
+            get: { controller.highlighterColor != nil },
+            set: { on in
+                controller.highlighterColor = on ? lastHighlighterColor : nil
+                showingHighlighterPalette = false
+                if on { highlighterToolbarFocused = true }
+            }
+        )) {
+            Label("Highlighter", systemImage: "highlighter")
+                .overlay(alignment: .bottom) {
+                    Capsule().fill(highlighterTint(lastHighlighterColor))
+                        .frame(width: 16, height: 3).offset(y: 3)
+                        .opacity(controlActiveState == .inactive ? 0.4 : 1)
+                        .accessibilityHidden(true)
+                }
+        }
+        .toggleStyle(.button)
+        .focused($highlighterToolbarFocused)
+        .onExitCommand(perform: armed ? { controller.highlighterColor = nil } : nil)
+        .accessibilityLabel("Highlighter")
+        .accessibilityValue(armed ? "On, \(lastHighlighterColor.capitalized)" : "Off")
+        .help(armed ? "\(lastHighlighterColor.capitalized) highlighter on. Click or press Escape to turn it off." : "Turn on the \(lastHighlighterColor) highlighter, then drag across text.")
+    }
+    private var macHighlighterPaletteButton: some View {
+        Button { showingHighlighterPalette.toggle() } label: {
+            Label("Choose highlight color", systemImage: "chevron.down")
+                .frame(minWidth: 20, minHeight: 20)
+                .contentShape(Rectangle())
+        }
+        .help("Choose highlight color · \(lastHighlighterColor.capitalized)")
+        .popover(isPresented: $showingHighlighterPalette, arrowEdge: .bottom) {
+            HStack(spacing: 10) {
+                ForEach(["yellow", "green", "blue", "pink", "purple"], id: \.self) { color in
+                    Button {
+                        lastHighlighterColor = color; controller.highlighterColor = color
+                        showingHighlighterPalette = false
+                        highlighterToolbarFocused = true
+                    } label: {
+                        Circle().fill(highlighterTint(color))
+                            .frame(width: 26, height: 26)
+                            .overlay { Circle().strokeBorder(Color.primary.opacity(0.22), lineWidth: 1) }
+                            .padding(3)
+                            .overlay { Circle().strokeBorder(color == lastHighlighterColor ? Color.primary : .clear, lineWidth: 2) }
+                            .frame(width: 34, height: 34)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(color.capitalized) highlighter")
+                    .accessibilityAddTraits(color == lastHighlighterColor ? .isSelected : [])
+                    .help(color.capitalized)
+                }
+            }.padding(12).fixedSize()
+        }
+    }
+    private func highlighterTint(_ name: String) -> Color {
+        switch name {
+        case "green": Color(red: 101 / 255, green: 184 / 255, blue: 121 / 255)
+        case "blue": Color(red: 105 / 255, green: 166 / 255, blue: 223 / 255)
+        case "pink": Color(red: 232 / 255, green: 138 / 255, blue: 175 / 255)
+        case "purple": Color(red: 175 / 255, green: 138 / 255, blue: 221 / 255)
+        default: Color(red: 230 / 255, green: 184 / 255, blue: 74 / 255)
+        }
+    }
+    #endif
+    private func closeReaderContext() {
+        if controller.highlighterColor != nil { controller.highlighterColor = nil }
+        else if searchVisible { closeSearch() }
+        else if panel != nil {
+            if macSidebarVisible { animateSidebarChange { panel = nil } }
+            else { panel = nil }
+        } else { closeReader() }
+    }
+    private func animateSidebarChange(_ change: () -> Void) {
+        #if os(macOS)
+        guard isDesktop else { change(); return }
+        let request = UUID().uuidString
+        let hold = prepared.book.format == .epub && controller.ready
+        if hold { controller.command?("sidebarTransition", ["phase": "begin", "request": request, "mode": "live"]) }
+        if reduceMotion {
+            change()
+            if hold { controller.command?("sidebarTransition", ["phase": "end", "request": request]) }
+            return
+        }
+        withAnimation(.smooth(duration: 0.26), completionCriteria: .logicallyComplete) {
+            change()
+        } completion: {
+            if hold { controller.command?("sidebarTransition", ["phase": "end", "request": request]) }
+        }
+        #else
+        change()
+        #endif
+    }
+    private func toggleReaderControls() {
+        // Reader chrome visibility never changes the inspector's presentation,
+        // destination or width. Its controls own that independent state.
+        controller.controlsVisible.toggle()
+    }
+    private func macSidebarShows(_ target: ReaderPanel, navigation: Int = 0) -> Bool {
+        guard macSidebarVisible else { return false }
+        if target == .search { return searchVisible }
+        return !searchVisible && panel == target && (target != .contents || navigationTab == navigation)
+    }
+    private func toggleMacSidebar(_ target: ReaderPanel, navigation: Int = 0) {
+        let next: ReaderPanel? = macSidebarShows(target, navigation: navigation) ? nil : target
+        let change = {
+            if searchVisible { closeSearch(sidebarWillRemainVisible: true) }
+            guard let next else { panel = nil; return }
+            #if os(macOS)
+            macSidebarDestination = next
+            #endif
+            controller.controlsVisible = true
+            if next == .search { openSearch() }
+            else {
+                if next == .contents { navigationTab = navigation }
+                panel = next
+            }
+        }
+        if macSidebarVisible != (next != nil) { animateSidebarChange(change) } else { change() }
+    }
     private func openSearch() {
         searchRevealTask?.cancel(); searchRevealTask = nil
         if isDesktop {
             controller.controlsVisible = true
-            var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
-            withTransaction(transaction) { panel = .search; adjustment = nil; searchVisible = true }
+            #if os(macOS)
+            macSidebarDestination = .search
+            #endif
+            panel = .search; adjustment = nil; searchVisible = true
         } else {
             controller.command?("searchPresentation", true)
             withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88)) { searchVisible = true }
         }
     }
-    private func closeSearch() {
+    private func closeSearch(sidebarWillRemainVisible: Bool = false) {
         if isDesktop {
-            if panel == .search { panel = nil }
-            searchFocused = false; controller.cancelSearch()
-            var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
-            withTransaction(transaction) { searchVisible = false }
+            let change = {
+                if panel == .search { panel = nil }
+                searchFocused = false; controller.cancelSearch()
+                searchVisible = false
+            }
+            if macSidebarVisible && panel == .search && !sidebarWillRemainVisible { animateSidebarChange(change) }
+            else { change() }
             return
         }
         searchFocused = false
@@ -1001,10 +1346,14 @@ struct ReaderView: View {
     }
     private var contents: some View {
         VStack {
-        Picker("Navigation", selection: $navigationTab) { Text("Contents").tag(0); Text("Bookmarks").tag(1) }.pickerStyle(.segmented).padding()
+        Picker("Navigation", selection: $navigationTab) { Text("Contents").tag(0); Text("Bookmarks").tag(1); Text("Notes").tag(2) }.labelsHidden().pickerStyle(.segmented).padding()
+        if navigationTab == 2 {
+            TextField("Search notes", text: $annotationSearch)
+                .textFieldStyle(.roundedBorder).padding(.horizontal)
+        }
         List {
             if navigationTab == 1 { Section("Bookmarks") {
-                let bookmarks = model.store?.bookmarks[prepared.id] ?? []
+                let bookmarks = model.readingStore(for: prepared.book)?.bookmarks[prepared.id] ?? []
                 if let bookmark = currentBookmark {
                     Button("Remove bookmark on this page", systemImage: "bookmark.slash") { removeBookmark(bookmark) }
                 } else {
@@ -1015,8 +1364,10 @@ struct ReaderView: View {
                     HStack {
                         Button(bookmark.name) { controller.returnPosition = controller.position; seek(bookmark.position); closeContentsIfCompact() }
                         Spacer()
+                        Button { bookmarkName = bookmark.name; editingBookmark = bookmark } label: { Image(systemName: "pencil").frame(width: 44, height: 44) }.accessibilityLabel("Rename bookmark \(bookmark.name)")
                         Button(role: .destructive) { removeBookmark(bookmark) } label: { Image(systemName: "trash").frame(width: 44, height: 44) }.accessibilityLabel("Delete bookmark \(bookmark.name)")
                     }
+                    .buttonStyle(.borderless)
                 }
             }
             }
@@ -1025,13 +1376,278 @@ struct ReaderView: View {
                 ForEach(controller.toc) { item in Button { controller.returnPosition = controller.position; controller.command?("location", item.id); closeContentsIfCompact() } label: { HStack { Text(item.title); Spacer(); if controller.currentChapter == item.id { Image(systemName: "checkmark").accessibilityLabel("Current chapter") } } } }
             }
             }
+            if navigationTab == 2 { Section("Notes") {
+                Menu("Export Reading Data", systemImage: "square.and.arrow.up") {
+                    Button("Export as Markdown") { prepareExport(asJSON: false) }
+                    Button("Export as JSON") { prepareExport(asJSON: true) }
+                }
+                if prepared.book.format == .epub {
+                    Text("Select text in the book, then choose Highlight or Add Note from the text selection menu. You can use the pencil to edit a note later.")
+                        .font(.callout).foregroundStyle(.primary.opacity(0.8))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if prepared.book.format == .pdf || prepared.book.format == .cbz {
+                    if prepared.book.format == .pdf {
+                        Text("Select text on one page, then choose Highlight selection in the reader controls.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Add note to this page", systemImage: "square.and.pencil") {
+                        guard let bookFingerprint = verifiedFingerprint else { return }
+                        editingNote = ReadingAnnotation(anchor: .page(controller.position.page), selectedText: nil, context: nil, note: "", color: nil, contentFingerprint: bookFingerprint)
+                    }.disabled(!controller.ready || verifiedFingerprint == nil)
+                }
+                if verifiedFingerprint == nil {
+                    Text(fingerprintFailed ? "Could not verify this book's content. Notes remain available below." : "Checking book content…")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if fingerprintFailed { Button("Retry checking book") { fingerprintAttempt += 1 } }
+                }
+                let notes = (model.readingStore(for: prepared.book)?.annotations[prepared.id] ?? []).filter { note in
+                    let query = annotationSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return query.isEmpty || note.note.localizedCaseInsensitiveContains(query) || (note.selectedText?.localizedCaseInsensitiveContains(query) ?? false) || (note.context?.localizedCaseInsensitiveContains(query) ?? false)
+                }
+                if notes.isEmpty { Text(annotationSearch.isEmpty ? "No notes yet" : "No matching notes").foregroundStyle(.secondary) }
+                ForEach(notes) { note in
+                    let page = note.availablePage(fingerprint: verifiedFingerprint, pageCount: controller.pageCount)
+                    let cfi = prepared.book.format == .epub ? note.availableEPUB(fingerprint: verifiedFingerprint) : nil
+                    HStack(alignment: .top) {
+                        Button {
+                            controller.returnPosition = controller.position
+                            if let cfi { controller.command?("annotationLocation", cfi) }
+                            else if page != nil, case .pdf = note.anchor { controller.command?("pdfHighlight", note) }
+                            else if let page { seek(ReadingPosition(page: page)) }
+                            closeContentsIfCompact()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                if let selection = note.selectedText { Text(selection).lineLimit(3) }
+                                if !note.note.isEmpty { Text(note.note).lineLimit(3) }
+                                if let page { Text("Page \(page + 1)").font(.caption).foregroundStyle(.secondary) }
+                                else if cfi != nil { Text("Highlighted passage").font(.caption).foregroundStyle(.secondary) }
+                                else { Text("Location unavailable for this book").font(.caption).foregroundStyle(.secondary) }
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.disabled(page == nil && cfi == nil)
+                        Button { editingNote = note } label: { Image(systemName: "pencil").frame(width: 44, height: 44) }.accessibilityLabel("Edit note")
+                        Button(role: .destructive) { noteToDelete = note } label: { Image(systemName: "trash").frame(width: 44, height: 44) }.accessibilityLabel("Delete note")
+                    }.buttonStyle(.borderless)
+                }
+            } }
         }.id(model.bookmarksRevision)
         }
+        .task(id: "\(currentFingerprintSourceKey)|\(navigationTab)|\(fingerprintAttempt)") {
+            guard navigationTab == 2, verifiedFingerprint == nil, prepared.book.format == .pdf || prepared.book.format == .cbz else { return }
+            await verifyBookFingerprint()
+        }
+        .sheet(item: $editingNote) { note in
+            PageNoteEditor(note: note, supportsUnderline: prepared.book.format == .epub, delete: annotationRemoval(for: note)) { updated in
+                guard let store = model.readingStore(for: prepared.book) else { return false }
+                do { try store.saveAnnotation(updated, id: prepared.id); model.bookmarksRevision += 1; return true }
+                catch { model.error = UserFacingError.message(error); return false }
+            }
+        }
+        .fileExporter(isPresented: $showingExport, document: exportDocument, contentType: exportType,
+                      defaultFilename: "LibraVia Reading Data") { result in
+            if case .failure = result { model.error = "Could not export the reading data." }
+            exportDocument = nil
+        }
+        .alert("Delete annotation?", item: $noteToDelete) { note in
+            Button("Delete", role: .destructive) {
+                guard let store = model.readingStore(for: prepared.book) else { model.error = "The reading data is unavailable."; return }
+                do { try store.removeAnnotation(note, id: prepared.id); model.bookmarksRevision += 1 }
+                catch { model.error = UserFacingError.message(error) }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: { note in Text(note.selectedText == nil ? "This page note will be removed from this device." : "This highlight and its note will be removed from this device.") }
+        .alert("Rename bookmark", item: $editingBookmark) { bookmark in
+            TextField("Name", text: $bookmarkName)
+            Button("Cancel", role: .cancel) { }
+            Button("Save") {
+                guard let store = model.readingStore(for: prepared.book) else { return }
+                do { try store.renameBookmark(bookmark, id: prepared.id, name: bookmarkName); model.bookmarksRevision += 1 }
+                catch { model.error = UserFacingError.message(error) }
+            }.disabled(bookmarkName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: { _ in
+            Text("Choose a name for this bookmark.")
+        }
     }
-    private func closeContentsIfCompact() { if !wideContents { panel = nil } }
+    private var pdfAnnotations: [ReadingAnnotation] {
+        _ = model.bookmarksRevision
+        return model.readingStore(for: prepared.book)?.annotations[prepared.id] ?? []
+    }
+    private func verifyBookFingerprint() async {
+        guard verifiedFingerprint == nil else { return }
+        let sourceKey = currentFingerprintSourceKey
+        fingerprintFailed = false
+        do {
+            let files = prepared.book.format == .pdf ? [prepared.document] : prepared.images
+            let value = try await BookFingerprint.compute(files: files)
+            guard !Task.isCancelled, sourceKey == currentFingerprintSourceKey else { return }
+            bookFingerprint = value; fingerprintSourceKey = sourceKey
+        } catch {
+            if !Task.isCancelled, sourceKey == currentFingerprintSourceKey { fingerprintFailed = true }
+        }
+    }
+    private func highlightPDFSelection() {
+        guard let selection = controller.pdfSelection, let fingerprint = verifiedFingerprint else { return }
+        let annotation = ReadingAnnotation(anchor: .pdf(page: selection.page, selections: selection.rectangles), selectedText: selection.text,
+                                           context: nil, note: "", color: "yellow", contentFingerprint: fingerprint)
+        newHighlightNote = annotation
+    }
+    private func closeContentsIfCompact() {
+        if !wideContents {
+            if macSidebarVisible { animateSidebarChange { panel = nil } }
+            else { panel = nil }
+        }
+    }
+    private func prepareExport(asJSON: Bool) {
+        guard let store = model.readingStore(for: prepared.book) else { model.error = "The reading data is unavailable."; return }
+        let annotations = store.annotations[prepared.id] ?? []
+        let bookmarks = store.bookmarks[prepared.id] ?? []
+        do {
+            let data = try asJSON
+                ? AnnotationExport.json(title: prepared.book.title, format: prepared.book.format, annotations: annotations, bookmarks: bookmarks)
+                : AnnotationExport.markdown(title: prepared.book.title, format: prepared.book.format, annotations: annotations, bookmarks: bookmarks)
+            exportType = asJSON ? .json : (UTType(filenameExtension: "md") ?? .plainText)
+            exportDocument = ReadingDataDocument(data: data)
+            showingExport = true
+        } catch { model.error = "Could not prepare the reading data for export." }
+    }
+    private func updateEPUBHighlights() {
+        guard prepared.book.format == .epub, controller.ready else { return }
+        let highlights: [[String: Any]] = (model.readingStore(for: prepared.book)?.annotations[prepared.id] ?? []).compactMap { note in
+            guard let cfi = note.availableEPUB(fingerprint: verifiedFingerprint) else { return nil }
+            return ["id": note.id.uuidString, "cfi": cfi, "color": note.color ?? "yellow", "style": note.style ?? "highlight", "hasNote": !note.note.isEmpty]
+        }
+        controller.command?("savedHighlights", highlights)
+    }
+    private func addEPUBHighlight(addNote: Bool = false, menuSelection: EPUBSelection? = nil, toolColor: String? = nil) {
+        guard let selected = controller.epubSelection,
+              ((menuSelection?.cfi == selected.cfi && menuSelection?.text == selected.text) || (menuSelection == nil && canHighlightEPUBSelection)) else { return }
+        guard let fingerprint = verifiedFingerprint else {
+            model.error = fingerprintFailed ? "Could not verify this book for highlighting. Open Notes & Highlights to retry." : "Checking this book for highlighting. Please try again shortly."
+            return
+        }
+        guard
+              let store = model.readingStore(for: prepared.book) else { return }
+        if var existing = (store.annotations[prepared.id] ?? []).first(where: { $0.availableEPUB(fingerprint: fingerprint) == selected.cfi }) {
+            if addNote { newHighlightNote = existing }
+            else if let toolColor {
+                existing.color = toolColor; existing.style = "highlight"; existing.modified = Date()
+                do { try store.saveAnnotation(existing, id: prepared.id); model.bookmarksRevision += 1
+                    controller.epubSelection = nil; controller.command?("clearSelection", nil) }
+                catch { model.error = UserFacingError.message(error) }
+            } else { bookmarkFeedback = "Already highlighted" }
+            return
+        }
+        let annotation = ReadingAnnotation(anchor: .epub(cfi: selected.cfi), selectedText: selected.text, context: selected.context, note: "", color: toolColor ?? "yellow", contentFingerprint: fingerprint)
+        if addNote {
+            newHighlightNote = annotation
+            controller.command?("clearSelection", nil)
+            return
+        }
+        do {
+            try store.saveAnnotation(annotation, id: prepared.id)
+            model.bookmarksRevision += 1; controller.epubSelection = nil
+            controller.command?("clearSelection", nil); bookmarkFeedback = "Highlight added"
+        } catch { model.error = UserFacingError.message(error) }
+    }
+    private func configureAnnotationActions() {
+        controller.selectionMenuAction = { addEPUBHighlight(addNote: $0, menuSelection: $1) }
+        controller.highlighterAction = { selection in
+            guard let color = controller.highlighterColor else { return }
+            controller.epubSelection = selection
+            addEPUBHighlight(menuSelection: selection, toolColor: color)
+        }
+        controller.annotationAction = { id in
+            guard let note = model.readingStore(for: prepared.book)?.annotations[prepared.id]?.first(where: { $0.id == id }),
+                  note.availableEPUB(fingerprint: verifiedFingerprint) != nil else { return }
+            newHighlightNote = note
+        }
+    }
+    private func annotationRemoval(for note: ReadingAnnotation) -> (() -> Bool)? {
+        guard model.readingStore(for: prepared.book)?.annotations[prepared.id]?.contains(where: { $0.id == note.id }) == true else { return nil }
+        return { deleteAnnotation(note) }
+    }
+    private func deleteAnnotation(_ note: ReadingAnnotation) -> Bool {
+        guard let store = model.readingStore(for: prepared.book) else { return false }
+        do { try store.removeAnnotation(note, id: prepared.id); model.bookmarksRevision += 1; return true }
+        catch { model.error = UserFacingError.message(error); return false }
+    }
     private func seek(_ position: ReadingPosition) {
         if prepared.book.format == .epub { controller.command?("seek", ["cfi": position.cfi as Any? ?? NSNull(), "fraction": position.fraction]) }
         else { controller.command?("page", position.page) }
+    }
+}
+
+private struct ReadingDataDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json, .plainText] }
+    let data: Data
+    init(data: Data) { self.data = data }
+    init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
+}
+
+private struct PageNoteEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let note: ReadingAnnotation
+    let save: (ReadingAnnotation) -> Bool
+    let delete: (() -> Bool)?
+    let supportsUnderline: Bool
+    @State private var color: String
+    @State private var style: String
+    @State private var confirmingDelete = false
+    @State private var text: String
+    @State private var saveFailed = false
+    init(note: ReadingAnnotation, supportsUnderline: Bool = false, delete: (() -> Bool)? = nil, save: @escaping (ReadingAnnotation) -> Bool) {
+        self.note = note; self.save = save; self.delete = delete; self.supportsUnderline = supportsUnderline
+        _text = State(initialValue: note.note); _color = State(initialValue: note.color ?? "yellow")
+        _style = State(initialValue: note.style ?? "highlight")
+    }
+    private func saveChanges(noteText: String) {
+        var updated = note; updated.note = noteText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if note.selectedText != nil { updated.color = color; updated.style = style }
+        updated.modified = Date()
+        if save(updated) { dismiss() } else { saveFailed = true }
+    }
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading) {
+                if let selection = note.selectedText { Text(selection).lineLimit(4).padding([.horizontal, .top]) }
+                if note.selectedText != nil {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker("Color", selection: $color) {
+                            Text("Yellow").tag("yellow"); Text("Green").tag("green"); Text("Blue").tag("blue")
+                            Text("Pink").tag("pink"); Text("Purple").tag("purple")
+                        }
+                        if supportsUnderline {
+                            Picker("Style", selection: $style) { Text("Highlight").tag("highlight"); Text("Underline").tag("underline") }
+                        }
+                    }.padding(.horizontal)
+                }
+                Text("Note").font(.headline).padding(.horizontal)
+                TextEditor(text: $text).padding().accessibilityLabel("Note text")
+                if let delete {
+                    HStack {
+                        if note.selectedText != nil && !note.note.isEmpty { Button("Remove Note Only") { saveChanges(noteText: "") } }
+                        Spacer()
+                        Button(note.selectedText == nil ? "Delete Note" : "Remove Highlight & Note", role: .destructive) { confirmingDelete = true }
+                    }.padding([.horizontal, .bottom])
+                    .confirmationDialog("Remove this annotation?", isPresented: $confirmingDelete) {
+                        Button("Remove", role: .destructive) { if delete() { dismiss() } else { saveFailed = true } }
+                    }
+                }
+            }
+                .navigationTitle(note.selectedText == nil ? "Page note" : "Highlight note")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            saveChanges(noteText: text)
+                        }.disabled(note.selectedText == nil && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+        }.frame(minWidth: 320, minHeight: 240)
+        .alert("Could not save note", isPresented: $saveFailed) {
+            Button("OK", role: .cancel) { }
+        } message: { Text("Your changes are still here. Try saving again.") }
     }
 }
 
@@ -1067,12 +1683,13 @@ struct BookOpeningView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let book: Book
     @State private var cover: Data?
+    // Freeze artwork during the handoff so a late image request cannot swap it.
+    @State private var openingCover: Data?
     @State private var contentReady: Bool?
     @State private var opening = false
     @State private var revealed = false
     @State private var showDots = false
     @State private var started = Date()
-    private var fadeOpening: Bool { reduceMotion || contentReady == false }
     private var dark: Bool { book.format == .cbz || (book.format == .epub && model.preferences.theme == "dark") }
     private var paper: Color {
         if book.format == .cbz { return .black }
@@ -1093,12 +1710,12 @@ struct BookOpeningView: View {
             }
             if !revealed {
                 GeometryReader { geometry in
-                    let width = min(geometry.size.width - 48, (geometry.size.height - 120) * 2 / 3, 480)
+                    let width = min(geometry.size.width - 24, (geometry.size.height - 72) * 2 / 3)
                     ZStack {
                         paper.ignoresSafeArea().opacity(opening ? 0 : 1)
                         ZStack {
                             paper
-                            if let cover = cover ?? model.cachedCoverImage(book, fullSize: true) ?? model.cachedCoverImage(book), let image = platformImage(cover) {
+                            if let cover = opening ? openingCover : availableCover, let image = platformImage(cover) {
                                 image.resizable().scaledToFit()
                             } else {
                                 VStack(spacing: 24) {
@@ -1109,8 +1726,8 @@ struct BookOpeningView: View {
                         }
                         .frame(width: max(1, width), height: max(1, width * 1.5))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .rotation3DEffect(.degrees(opening && !fadeOpening ? -90 : 0), axis: (x: 0, y: 1, z: 0), anchor: .leading, perspective: 0.65)
-                        .opacity(opening && fadeOpening ? 0 : 1)
+                        .scaleEffect(opening && !reduceMotion ? 1.10 : 1)
+                        .opacity(opening ? 0 : 1)
                         if showDots && !opening {
                             VStack { Spacer(); BookLoadingDots(reduceMotion: reduceMotion).padding(.bottom, 16) }
                         }
@@ -1151,14 +1768,17 @@ struct BookOpeningView: View {
             // Let native presentation finish and the renderer's first frame settle.
             let remaining = max(0.18, 0.65 - Date().timeIntervalSince(started))
             do { try await Task.sleep(for: .seconds(remaining)) } catch { return }
-            // End edge-on: rotating further exposes the back face. Let SwiftUI finish
-            // the handoff instead of leaving the cover visible until a timer fires.
-            withAnimation(fadeOpening ? .easeOut(duration: 0.18) : .easeIn(duration: 0.5), completionCriteria: .logicallyComplete) {
+            // Reveal the settled reader beneath the cover without a page flip.
+            openingCover = availableCover
+            withAnimation(reduceMotion || contentReady == false ? .easeOut(duration: 0.18) : .easeInOut(duration: 0.38), completionCriteria: .logicallyComplete) {
                 opening = true
             } completion: {
                 revealed = true
             }
         }
+    }
+    private var availableCover: Data? {
+        cover ?? model.cachedCoverImage(book, fullSize: true) ?? model.cachedCoverImage(book)
     }
     private func close() {
         model.error = nil
@@ -1248,7 +1868,11 @@ struct ReaderCommands: Commands {
             #if os(macOS)
             Button("Close Sidebar") { actions?.close() }.disabled(actions?.hasPanel != true)
             #endif
+            #if os(macOS)
+            Button("Close Panel or Book") { actions?.close() }
+            #else
             Button("Close Panel or Book") { actions?.close() }.keyboardShortcut(.escape, modifiers: [])
+            #endif
           }.disabled(actions == nil)
         }
     }

@@ -1,6 +1,6 @@
 # ADR 0004 Existing server reading data sync
 
-Status: Accepted. Date: 2026-10-08. Implementation: Jellyfin progress exists; multi-provider and annotation sync planned.
+Status: Partially superseded by [ADR 0006](0006-icloud-and-user-book-folder.md). Date: 2026-10-08. Jellyfin progress exists; the later decision adds private iCloud sync for unsupported data and standalone book files.
 
 ## Context
 
