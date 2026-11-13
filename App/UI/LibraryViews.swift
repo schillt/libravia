@@ -1103,7 +1103,7 @@ struct SettingsView: View {
         .confirmationDialog("Sign out?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
             Button("Sign Out", role: .destructive) { Task { await model.signOut() } }
         } message: {
-            Text("Signing out removes this account’s local positions, bookmarks, notes, saved books and downloads, including unsynced changes. Your Jellyfin library and separate imported books are not deleted.")
+            Text("Signing out removes this account’s saved books and downloads and attempts to remove its local reading data. Reading data with pending iCloud recovery changes is kept on this device. Earlier recovery-account journals may also remain. Your Jellyfin library, iCloud backups and separate imported books are not deleted.")
         }
     }
     private func license(_ name: String) -> String { guard let url = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "Licenses") else { return "License included with source distribution." }; return (try? String(contentsOf: url, encoding: .utf8)) ?? "" }

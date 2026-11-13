@@ -38,6 +38,7 @@ import AppKit
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("automaticStandaloneRecovery") private var automaticRecovery = false
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @AppStorage("librarySidebarWidth") private var sidebarWidth = 0.0
@@ -110,10 +111,11 @@ struct RootView: View {
                         Text(entry.title).font(.headline)
                         Text(entry.reason == .conflict
                              ? "The server has a different reading position. Choose which one to keep."
+                             : entry.reason == .edition ? "This book's edition needs review. Its earlier saved place has been kept."
                              : "This book is not available on Jellyfin. Its local reading position is retained.")
                             .font(.callout).foregroundStyle(.secondary)
-                        if entry.reason == .conflict {
-                            Button("Choose Position") { showingSyncReview = false; model.openBlockedProgress(entry) }
+                        if entry.reason != .unavailable {
+                            Button(entry.reason == .edition ? "Review Saved Place" : "Choose Position") { showingSyncReview = false; model.openBlockedProgress(entry) }
                         } else {
                             HStack {
                                 NavigationLink("Find Matching Book") { ProgressRematchView(entry: entry) }
@@ -154,6 +156,13 @@ struct RootView: View {
         }
         #endif
         .appSurface()
+        .task(id: "\(scenePhase)|\(automaticRecovery)") {
+            guard scenePhase == .active, automaticRecovery else { return }
+            while !Task.isCancelled {
+                await model.retryAutomaticStandaloneRecovery()
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
         .environment(\.readerTransitionNamespace, readerNamespace)
         .onChange(of: scenePhase) { _, value in if value != .active { Task { await model.flushProgress() } } else { Task { await model.refreshCache() } } }
     }

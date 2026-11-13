@@ -125,6 +125,39 @@ final class LocalLibraryTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
 
+    func testImportCatalogWriteFailurePreservesSourceAndCanRetry() async throws {
+        let namespace = "local-import-write-failure-\(UUID())"
+        let fm = FileManager.default
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let catalogRoot = support.appendingPathComponent("JellyfinBooksLocalLibrary/\(stableKey(namespace))")
+        let savedRoot = support.appendingPathComponent("JellyfinBooksSaved/\(stableKey(namespace))")
+        let source = fm.temporaryDirectory.appendingPathComponent("\(UUID()).pdf")
+        defer { try? fm.removeItem(at: source); try? fm.removeItem(at: catalogRoot); try? fm.removeItem(at: savedRoot) }
+        let original = try Data(contentsOf: fixturePDF)
+        try original.write(to: source)
+        let library = try LocalLibrary(namespace: namespace)
+        let index = catalogRoot.appendingPathComponent("catalog.json")
+        // Fail the catalog commit after the staged book is installed. This is
+        // a deterministic write failure, not a claim of actual disk exhaustion.
+        try fm.createDirectory(at: index, withIntermediateDirectories: false)
+        do { _ = try await library.importFile(source); XCTFail("Import must report a failed catalog write") } catch { }
+        let failedCatalog = await library.catalog()
+        XCTAssertTrue(failedCatalog.isEmpty, "A failed import must not be shown as committed")
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        let saved = try DurableBookStore(namespace: namespace)
+        let managed = try await saved.catalog()
+        XCTAssertEqual(managed.count, 1, "Keep the completed app-owned copy available for retry")
+        try fm.removeItem(at: index)
+        let retried = try await library.importFile(source)
+        XCTAssertEqual(retried.id, managed.first?.id)
+        let reopened = try LocalLibrary(namespace: namespace)
+        let catalog = await reopened.catalog()
+        XCTAssertEqual(catalog.map(\.id), [retried.id])
+        let directory = await reopened.directory(for: retried)
+        XCTAssertNotNil(directory)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
     @MainActor func testRemovingAndReimportingKeepsReadingData() async throws {
         let namespace = "local-import-test-\(UUID())"
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

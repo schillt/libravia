@@ -2,6 +2,50 @@ import XCTest
 @testable import BookCore
 
 final class CoreTests: XCTestCase {
+    func testPositionTickConversionCannotOverflowOnCorruptValues() {
+        for format in [BookFormat.pdf, .cbz] {
+            XCTAssertEqual(ReadingPosition(page: -1).ticks(for: format), 0)
+            XCTAssertEqual(ReadingPosition(page: 7).ticks(for: format), 70_000)
+            let upper = Int64(ReadingPosition.maximumTickPage) * 10_000
+            XCTAssertEqual(ReadingPosition(page: Int.max).ticks(for: format), upper)
+            XCTAssertEqual(ReadingPosition.from(ticks: Int64.max, format: format).ticks(for: format), upper)
+        }
+        for value in [Double.nan, .infinity, -.infinity] {
+            XCTAssertEqual(ReadingPosition(fraction: value).ticks(for: .epub), 0)
+            XCTAssertNil(ReadingPosition(fraction: value).validatedTicks(for: .epub))
+        }
+        XCTAssertNil(ReadingPosition(page: Int.max).validatedTicks(for: .pdf))
+        XCTAssertNil(ReadingPosition(fraction: 2).validatedTicks(for: .epub))
+        XCTAssertNil(ReadingPosition().validatedTicks(for: .unsupported))
+        XCTAssertEqual(ReadingPosition(page: 7).validatedTicks(for: .cbz), 70_000)
+        XCTAssertEqual(ReadingPosition(fraction: 2).ticks(for: .epub), 10_000_000)
+        XCTAssertEqual(ReadingPosition(fraction: 0.42).ticks(for: .epub), 4_200_000)
+    }
+
+    @MainActor func testInvalidReaderPositionCannotReplaceEarlierSavedPlace() throws {
+        let model = AppModel(restoreLogin: false)
+        let namespace = "invalid-position-\(UUID())"
+        let store = try ReadingStore(namespace: namespace)
+        defer { try? store.delete() }
+        model.store = store
+        let book = Book(id: "book", title: "Synthetic", author: "", summary: "", format: .pdf, isFolder: false, ticks: 0)
+        let earlier = ReadingRecord(position: .init(page: 7), acknowledgedTicks: 0, dirty: true, updated: Date(), title: book.title, format: book.format)
+        try store.set(earlier, id: book.id)
+        model.savePosition(.init(page: Int.max), book: book)
+        XCTAssertEqual(store.records[book.id]?.position, earlier.position)
+        XCTAssertEqual(try ReadingStore(namespace: namespace).records[book.id]?.position, earlier.position)
+        XCTAssertNotNil(model.error)
+    }
+    func testEPUBPositionValidationRejectsIncompleteOrInvalidRendererMessages() {
+        let cfi = "epubcfi(/6/2!/4/2/1:0)"
+        XCTAssertEqual(ReaderPositionValidation.epub(cfi: cfi, fraction: 0.42)?.cfi, cfi)
+        XCTAssertNil(ReaderPositionValidation.epub(cfi: nil, fraction: 0))
+        XCTAssertNil(ReaderPositionValidation.epub(cfi: "invalid", fraction: 0.4))
+        XCTAssertNil(ReaderPositionValidation.epub(cfi: cfi, fraction: .nan))
+        XCTAssertNil(ReaderPositionValidation.epub(cfi: cfi, fraction: -0.01))
+        XCTAssertNil(ReaderPositionValidation.epub(cfi: cfi, fraction: 1.01))
+        XCTAssertNil(ReaderPositionValidation.epub(cfi: "epubcfi(" + String(repeating: "x", count: 8192) + ")", fraction: 0.5))
+    }
     func testRapidTurnQueuePreservesForwardReverseOrderAndCanBeCleared() {
         var queue = ReaderRapidTurnQueue()
         queue.append("next"); queue.append("previous"); queue.append("next")
@@ -182,6 +226,27 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(restored.records["book"]?.dirty == true)
         XCTAssertEqual(restored.bookmarks["book"]?.first?.position, position)
     }
+    @MainActor func testRecreatedReaderUsesLatestSavedPositionForItsActiveBook() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = AppModel(restoreLogin: false)
+        let store = try ReadingStore(namespace: "reader-recreation", baseDirectory: root)
+        model.store = store
+        let book = Book(id: "book", title: "Fixture", author: "", summary: "", format: .epub, isFolder: false, imageTag: nil, ticks: 0)
+        let initial = ReadingPosition(fraction: 0.1, cfi: "epubcfi(/6/2!/4/2:10)")
+        let prepared = PreparedBook(book: book, directory: root, document: root.appendingPathComponent("book"), images: [], position: initial)
+        model.readerLaunchBook = book; model.reader = prepared
+        XCTAssertEqual(model.currentReaderPreparation(prepared).position, initial)
+        let latest = ReadingPosition(fraction: 0.6, cfi: "epubcfi(/6/4!/4/2:20)")
+        model.savePosition(latest, book: book)
+        XCTAssertEqual(model.reader?.position, initial, "The original preparation is still the opening snapshot")
+        XCTAssertEqual(model.currentReaderPreparation(prepared).position, latest)
+        var otherFormat = try XCTUnwrap(store.records[book.id]); otherFormat.format = .pdf
+        try store.set(otherFormat, id: book.id)
+        XCTAssertEqual(model.currentReaderPreparation(prepared).position, initial, "Do not reuse a different format's position")
+        model.closeReader()
+        XCTAssertEqual(model.currentReaderPreparation(prepared).position, initial, "A closed reader cannot reuse another session's state")
+    }
     @MainActor func testSignOutStillClearsLocalStateWhenCredentialDeletionFails() async throws {
         let model = AppModel(restoreLogin: false, deleteCredentials: { throw ReaderError.message("Injected deletion failure") })
         let namespace = "test-\(UUID())"
@@ -199,6 +264,22 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
         XCTAssertTrue(model.error?.contains("Keychain") == true)
         XCTAssertFalse(model.connecting)
+    }
+    @MainActor func testSignOutReportsPendingRecoveryDataWasKept() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = AppModel(restoreLogin: false, deleteCredentials: {})
+        let store = try ReadingStore(namespace: "pending-signout", baseDirectory: root)
+        let scope = try CloudReadingScope(cloudUserRecordName: "synthetic", source: .imported)
+        try store.prepareAtomicReading(scope: scope)
+        try store.add(Bookmark(name: "Keep", position: ReadingPosition(page: 1)), id: "book")
+        model.store = store
+        await model.signOut()
+        XCTAssertNil(model.store)
+        XCTAssertTrue(model.error?.contains("pending iCloud recovery changes was kept") == true)
+        let reopened = try ReadingStore(namespace: "pending-signout", baseDirectory: root)
+        XCTAssertEqual(reopened.bookmarks["book"]?.first?.name, "Keep")
+        XCTAssertTrue(reopened.hasUnsyncedCloudChanges)
     }
     func testCacheEvictionProtectsOpenBookAndClearPreservesIt() async throws {
         let cache = try BookCache(namespace: "test-\(UUID())", budget: 20)
@@ -243,6 +324,44 @@ final class StubURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 final class ProviderTests: XCTestCase {
+    @MainActor func testEditionHoldCannotBeRetriedIntoAnUnreviewedReport() async throws {
+        let previousHandler = StubURLProtocol.handler
+        defer { StubURLProtocol.handler = previousHandler }
+        StubURLProtocol.handler = { _ in
+            XCTFail("Edition review must precede any request")
+            throw URLError(.cancelled)
+        }
+        let model = AppModel(restoreLogin: false)
+        let store = try ReadingStore(namespace: "edition-held-sync-\(UUID())")
+        defer { try? store.delete() }
+        model.store = store; model.provider = provider()
+        let record = ReadingRecord(position: .init(page: 4), acknowledgedTicks: 0, dirty: true, updated: Date(), title: "Synthetic", format: .pdf, syncBlock: .edition)
+        try store.set(record, id: "book")
+        await model.flushProgress()
+        await model.retryBlockedProgress("book")
+        XCTAssertEqual(store.records["book"]?.syncBlock, .edition)
+        XCTAssertEqual(store.records["book"]?.position, record.position)
+        XCTAssertTrue(model.error?.contains("review its saved place") == true)
+    }
+    @MainActor func testCorruptSavedPositionNeverReachesJellyfin() async throws {
+        let previousHandler = StubURLProtocol.handler
+        defer { StubURLProtocol.handler = previousHandler }
+        StubURLProtocol.handler = { _ in
+            XCTFail("A corrupt position must not trigger even a progress lookup or report")
+            throw URLError(.cancelled)
+        }
+        let model = AppModel(restoreLogin: false)
+        let store = try ReadingStore(namespace: "corrupt-sync-\(UUID())")
+        defer { try? store.delete() }
+        model.store = store; model.provider = provider()
+        let record = ReadingRecord(position: .init(page: Int.max), acknowledgedTicks: 10_000, dirty: true, updated: Date(), title: "Synthetic", format: .pdf)
+        try store.set(record, id: "book")
+        await model.flushProgress()
+        XCTAssertEqual(store.records["book"]?.position.page, Int.max)
+        XCTAssertEqual(store.records["book"]?.acknowledgedTicks, 10_000)
+        XCTAssertEqual(store.records["book"]?.dirty, true)
+        XCTAssertTrue(model.error?.contains("not sent to Jellyfin") == true)
+    }
     private func provider() -> JellyfinProvider {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [StubURLProtocol.self]
         return JellyfinProvider(account: Account(server: URL(string: "https://example.com/base")!, userID: "user", serverID: "server", username: "reader", token: "test-token"), configuration: config)

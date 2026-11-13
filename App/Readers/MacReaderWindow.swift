@@ -230,7 +230,11 @@ struct MacReaderInput: NSViewRepresentable {
             MainActor.assumeIsolated { self?.updateChrome(force: true) }
         }
         inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { [weak self] event in
-            MainActor.assumeIsolated { self?.handle(event) ?? event }
+            let consumed = MainActor.assumeIsolated {
+                guard let self else { return false }
+                return self.handle(event) == nil
+            }
+            return consumed ? nil : event
         }
     }
     private func handle(_ event: NSEvent) -> NSEvent? {

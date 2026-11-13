@@ -107,6 +107,9 @@ struct OnDeviceLibraryView: View {
         .profileToolbar()
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                NavigationLink { PrivateRecoveryView() } label: {
+                    Label("Private Recovery", systemImage: "icloud")
+                }.help("Private Recovery")
                 Menu {
                     Picker("View", selection: layoutSelection) {
                         ForEach(CatalogViewLayout.allCases) { value in Label(value.title, systemImage: value.symbol).tag(value) }
@@ -261,4 +264,402 @@ struct StorageManagementView: View {
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
     private func refresh() async { await model.refreshStorageUsage(); loaded = true }
+}
+
+/// Manual recovery remains separate from local reading and requires a fresh
+/// account check before any transfer. Review tools are still in development.
+private struct PrivateRecoveryView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("automaticStandaloneRecovery") private var automaticRecovery = false
+    @AppStorage("automaticStandaloneRecoveryAccount") private var automaticRecoveryAccount = ""
+    @State private var service: StandaloneCloudRecoveryService?
+    @State private var inspection: StandaloneCloudRecoveryService.Inspection?
+    @State private var task: Task<Void, Never>?
+    @State private var busy = false
+    @State private var message: String?
+    @State private var confirmingCreate = false
+    @State private var confirmingAccountSwitch = false
+    @State private var reviews: [StandaloneReadingReviewItem] = []
+    @State private var reviewing: StandaloneReadingReviewItem?
+    @State private var incoming: [StandaloneIncomingReadingItem] = []
+    @State private var reviewingIncoming: StandaloneIncomingReadingItem?
+    @State private var conflicts: [StandaloneReadingConflictItem] = []
+    @State private var resolving: StandaloneReadingConflictItem?
+    @State private var bookConflicts: [StandaloneBookConflictItem] = []
+    @State private var resolvingBook: StandaloneBookConflictItem?
+    @State private var deletedBackups: [StandaloneDeletedBackupItem] = []
+    @State private var reviewingDeletion: StandaloneDeletedBackupItem?
+
+    var body: some View {
+        Form {
+            Section("Private iCloud Recovery") {
+                Text("Save and restore imported EPUB, PDF, and CBZ books and their reading data using your private iCloud account.")
+                Text("Recovery is being tested. Keep your original files until you have verified your restored library.")
+                    .foregroundStyle(.secondary)
+                if busy { ProgressView("Checking recovery…") }
+                if let message { Text(message).foregroundStyle(.secondary) }
+                if automaticRecovery, let status = model.automaticRecoveryStatus {
+                    Text(status).font(.footnote).foregroundStyle(.secondary)
+                }
+                if automaticRecovery && (inspection == nil || automaticRecoveryAccount != inspection?.scope.cloudAccountKey) {
+                    Button("Turn Off Automatic Recovery") { model.disableAutomaticRecovery() }.disabled(busy)
+                }
+                Button("Check iCloud") { checkAccount() }.disabled(busy)
+                if let inspection {
+                    if model.canSwitchStandaloneRecoveryAccount(scope: inspection.scope) {
+                        Text("This device library’s recovery is linked to a different iCloud account.")
+                        switch inspection.zoneState {
+                        case .present:
+                            Button("Review Account Switch…") { confirmingAccountSwitch = true }.disabled(busy)
+                        case .missing:
+                            Text("The current iCloud account has no recovery area for this library.").foregroundStyle(.secondary)
+                            Button("Set Up Recovery…") { confirmingCreate = true }.disabled(busy)
+                        case .deletedByUser:
+                            Text("The current account’s recovery area was removed or reset and needs review.").foregroundStyle(.secondary)
+                        }
+                    } else { switch inspection.zoneState {
+                    case .present:
+                        Button("Sync and Restore") { runRecovery(inspection) }.disabled(busy)
+                        Toggle("Sync Automatically", isOn: Binding(
+                            get: { automaticRecovery && automaticRecoveryAccount == inspection.scope.cloudAccountKey },
+                            set: { model.configureAutomaticRecovery(enabled: $0, scope: inspection.scope) }
+                        )).disabled(busy)
+                        Text("LibraVia retries while the app is open and no book is being read.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    case .missing:
+                        Text("No recovery area was found for this account.").foregroundStyle(.secondary)
+                        Button("Set Up Recovery…") { confirmingCreate = true }.disabled(busy)
+                    case .deletedByUser:
+                        Text("This recovery area was removed or reset. Your device copies are unchanged; review your iCloud account before continuing.").foregroundStyle(.secondary)
+                    } }
+                }
+            }
+            if !reviews.isEmpty {
+                Section("Reading changes to review") {
+                    ForEach(reviews) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(item.book.title).font(.headline)
+                            reviewDetails(item.payload, kind: item.key.kind, format: item.book.format)
+                            if item.hasConflict {
+                                Text("A different cloud version also exists and will be kept for separate review.")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                            Button(item.payload == nil ? "Review Deletion…" : "Confirm This Edition…") { reviewing = item }.disabled(busy)
+                        }.padding(.vertical, 4)
+                    }
+                }
+            }
+            if !incoming.isEmpty {
+                Section("Incoming reading changes") {
+                    ForEach(incoming) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(item.book.title).font(.headline)
+                            reviewDetails(item.payload, kind: item.key.kind, format: item.book.format)
+                            if item.editionFingerprint == nil {
+                                Text("This older change has no edition information.").font(.footnote).foregroundStyle(.secondary)
+                                Button("Review This Change…") { reviewingIncoming = item }.disabled(busy)
+                            } else {
+                                Text("This change could not be restored automatically. Check the book edition and try recovery again.").font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }.padding(.vertical, 4)
+                    }
+                }
+            }
+            if !conflicts.isEmpty {
+                Section("Conflicting reading changes") {
+                    ForEach(conflicts) { item in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(item.book.title).font(.headline)
+                            Text(item.currentIsStaged ? "Earlier iCloud version" : "On this device").font(.subheadline.bold())
+                            reviewDetails(item.local.payload, kind: item.key.kind, format: item.book.format)
+                            Text("Other iCloud version").font(.subheadline.bold())
+                            reviewDetails(item.remote.payload, kind: item.key.kind, format: item.book.format)
+                            if item.local.editionFingerprint == nil || item.remote.editionFingerprint == nil {
+                                Text("An older version has no edition information. Choose it only if you recognize it as belonging to this book.").font(.footnote).foregroundStyle(.secondary)
+                            }
+                            Button("Choose a Version…") { resolving = item }.disabled(busy)
+                        }.padding(.vertical, 4)
+                    }
+                }
+            }
+            if !deletedBackups.isEmpty {
+                Section("Removed iCloud backups") {
+                    ForEach(deletedBackups) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(item.book.title).font(.headline)
+                            Text("The iCloud backup was removed. Your device copy is still available and is not backed up.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Button(item.needsReview ? "Review Backup…" : "Restore Backup…") { reviewingDeletion = item }.disabled(busy)
+                        }.padding(.vertical, 4)
+                    }
+                }
+            }
+            if !bookConflicts.isEmpty {
+                Section("Conflicting book copies") {
+                    ForEach(bookConflicts) { item in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(item.title).font(.headline)
+                            Text(item.currentIsStaged ? "Earlier iCloud version" : "Device recovery change").font(.subheadline.bold())
+                            bookVersionDetails(item.current)
+                            Text("Other iCloud version").font(.subheadline.bold())
+                            bookVersionDetails(item.remote)
+                            if case .book(let current) = item.current, case .book(let remote) = item.remote,
+                               current.sha256 != remote.sha256 || current.format != remote.format {
+                                Text("These are different editions. A device copy will not be replaced by a different edition.")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                            Button("Choose a Book Version…") { resolvingBook = item }.disabled(busy)
+                        }.padding(.vertical, 4)
+                    }
+                }
+            }
+            Section("Other libraries") {
+                Text("For Jellyfin reading data, open a Jellyfin book and choose Private Reading Recovery in the reader. This recovery pass does not change Jellyfin files.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped).appSurface().navigationTitle("Private Recovery")
+        .confirmationDialog("Set up a new recovery area?", isPresented: $confirmingCreate, titleVisibility: .visible) {
+            Button("Set Up Recovery") { createZone() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("If you previously used recovery, check that you are signed into the same iCloud account. A new recovery area cannot restore data that is missing from iCloud.")
+        }
+        .confirmationDialog("Use the current iCloud account?", isPresented: $confirmingAccountSwitch, titleVisibility: .visible) {
+            Button("Use Current iCloud Account") { switchRecoveryAccount() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("LibraVia will prepare this device’s books and reading changes for the current account and check its existing recovery data. Books only in the earlier account are not transferred. Reading changes not linked to a book on this device remain in the earlier recovery journal. Separate books remain separate even when their files match. Review differences before syncing.")
+        }
+        .confirmationDialog("Is this change from this book?", item: $reviewing, titleVisibility: .visible) { item in
+            Button(item.payload == nil ? "Confirm Deletion" : "Confirm This Edition") { confirmReview(item) }
+        } message: { item in
+            Text(item.payload == nil
+                 ? "This \(item.key.kind.rawValue) deletion has no saved content to display. Confirm only if it belongs to the current copy of \(item.book.title). A different cloud version will remain for review."
+                 : "Confirm that this change belongs to the current copy of \(item.book.title). A different cloud version, if present, will be kept for separate review.")
+        }
+        .confirmationDialog("Restore this older change?", item: $reviewingIncoming, titleVisibility: .visible) { item in
+            Button(item.payload == nil ? "Confirm and Apply Deletion" : "Confirm and Restore") { confirmIncoming(item) }
+            Button("Cancel", role: .cancel) { }
+        } message: { item in
+            Text(item.payload == nil
+                 ? "This deletion has no saved content to display. Confirm only if it belongs to the current copy of \(item.book.title). It will remove this reading item on this device."
+                 : "Confirm that this change belongs to the current copy of \(item.book.title). It will be restored here and queued for the next sync.")
+        }
+        .confirmationDialog("Choose which version to keep", item: $resolving, titleVisibility: .visible) { item in
+            Button(item.local.editionFingerprint == nil ? (item.currentIsStaged ? "Keep Earlier iCloud Version and Confirm Edition" : "Keep Device Version and Confirm Edition") : (item.currentIsStaged ? "Keep Earlier iCloud Version" : "Keep Device Version")) { resolveConflict(item, choice: .local) }
+            Button(item.remote.editionFingerprint == nil ? "Keep Other iCloud Version and Confirm Edition" : "Keep Other iCloud Version") { resolveConflict(item, choice: .remote) }
+        } message: { item in
+            Text("This choice applies to one change in \(item.book.title). For a version without edition information, confirm it belongs to this copy. Any other conflicting versions remain for review.")
+        }
+        .confirmationDialog("Choose a book version", item: $resolvingBook, titleVisibility: .visible) { item in
+            Button(bookChoiceLabel(item.current, source: item.currentIsStaged ? "earlier iCloud" : "device")) { resolveBookConflict(item, choice: .local) }
+            Button(bookChoiceLabel(item.remote, source: "other iCloud")) { resolveBookConflict(item, choice: .remote) }
+        } message: { item in
+            Text("This choice applies to \(item.title). Removing its iCloud backup keeps the copy on this device and your original source file. Other conflicts remain for review.")
+        }
+        .confirmationDialog("Review removed backup", item: $reviewingDeletion, titleVisibility: .visible) { item in
+            Button("Restore iCloud Backup") { reviewDeletion(item, restoreBackup: true) }
+            if item.needsReview { Button("Keep Device Copy Without Backup") { reviewDeletion(item, restoreBackup: false) } }
+            Button("Cancel", role: .cancel) { }
+        } message: { item in
+            Text("Your copy of \(item.book.title) and its original source file will be kept. Restoring the backup queues this device copy for the next recovery pass.")
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active, service != nil || task != nil else { return }
+            task?.cancel(); service = nil; inspection = nil
+            reviews = []; incoming = []; conflicts = []; bookConflicts = []; deletedBackups = []
+            message = "Recovery paused. Check iCloud again to continue."
+        }
+        .onDisappear { task?.cancel(); task = nil }
+    }
+
+    @ViewBuilder private func bookVersionDetails(_ version: CloudBookJournalVersion) -> some View {
+        switch version {
+        case .book(let metadata):
+            Text(metadata.title)
+            Text("\(metadata.format.rawValue.uppercased()) · \(ByteCountFormatter.string(fromByteCount: metadata.byteCount, countStyle: .file))")
+                .font(.footnote).foregroundStyle(.secondary)
+        case .tombstone:
+            Text("Remove iCloud backup; keep this device copy and the original file.")
+        }
+    }
+    private func bookChoiceLabel(_ version: CloudBookJournalVersion, source: String) -> String {
+        switch version {
+        case .book: return "Keep \(source) book"
+        case .tombstone: return "Remove iCloud backup (\(source))"
+        }
+    }
+
+    @ViewBuilder private func reviewDetails(_ payload: CloudReadingPayload?, kind: CloudReadingKind, format: BookFormat) -> some View {
+        switch payload {
+        case .position(let value):
+            Text("Reading position · \(positionDescription(value.position, format: format))")
+            if let cfi = value.position.cfi { Text(cfi).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled) }
+        case .bookmark(let bookmark):
+            Text("Bookmark: \(bookmark.name)")
+            Text(positionDescription(bookmark.position, format: format)).font(.footnote).foregroundStyle(.secondary)
+            if let cfi = bookmark.position.cfi { Text(cfi).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled) }
+        case .annotation(let annotation):
+            Text("Highlight or note")
+            if let selected = annotation.selectedText, !selected.isEmpty { Text(selected) }
+            if !annotation.note.isEmpty { Text(annotation.note) }
+            switch annotation.anchor {
+            case .epub(let cfi): Text(cfi).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+            case .pdf(let page, _), .page(let page): Text("Page \(page < Int.max ? page + 1 : page)").font(.footnote).foregroundStyle(.secondary)
+            }
+        case nil:
+            Text("Deleted \(kind.rawValue)")
+        }
+    }
+    private func positionDescription(_ position: ReadingPosition, format: BookFormat) -> String {
+        if format == .epub {
+            let fraction = position.fraction.isFinite ? min(1, max(0, position.fraction)) : 0
+            return fraction.formatted(.percent.precision(.fractionLength(1)))
+        }
+        return "Page \(position.page < Int.max ? position.page + 1 : position.page)"
+    }
+    private func refreshReviews(service: StandaloneCloudRecoveryService, inspection: StandaloneCloudRecoveryService.Inspection) async throws {
+        guard try await service.validate(inspection) else { throw CancellationError() }
+        let pending = try await model.pendingStandaloneReadingReviews(scope: inspection.scope)
+        let received = try await model.pendingStandaloneIncomingReading(scope: inspection.scope)
+        let alternatives = try await model.pendingStandaloneReadingConflicts(scope: inspection.scope)
+        let books = try await model.pendingStandaloneBookConflicts(scope: inspection.scope)
+        let deleted = try await model.standaloneDeletedBackups(scope: inspection.scope)
+        guard try await service.validate(inspection), !Task.isCancelled else { throw CancellationError() }
+        reviews = pending; incoming = received; conflicts = alternatives; bookConflicts = books; deletedBackups = deleted
+    }
+    private func confirmIncoming(_ item: StandaloneIncomingReadingItem) {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                try await model.confirmStandaloneIncomingReading(item, scope: inspection.scope,
+                                                                   accountIsCurrent: { try await service.validate(inspection) })
+                try await refreshReviews(service: service, inspection: inspection)
+                message = "The change was restored and is ready for the next recovery pass."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+    private func confirmReview(_ item: StandaloneReadingReviewItem) {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                try await model.confirmStandaloneReadingReview(item, scope: inspection.scope,
+                                                               accountIsCurrent: { try await service.validate(inspection) })
+                try await refreshReviews(service: service, inspection: inspection)
+                message = "The change is ready for the next recovery pass. Any cloud conflict still needs review."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+
+    private func resolveConflict(_ item: StandaloneReadingConflictItem, choice: CloudAtomicReadingStore.ConflictChoice) {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                try await model.resolveStandaloneReadingConflict(item, scope: inspection.scope, choice: choice,
+                                                                 accountIsCurrent: { try await service.validate(inspection) },
+                                                                 confirmUnverifiedEdition: (choice == .local ? item.local : item.remote).editionFingerprint == nil)
+                try await refreshReviews(service: service, inspection: inspection)
+                message = "The selected change is ready for the next recovery pass."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+
+    private func resolveBookConflict(_ item: StandaloneBookConflictItem, choice: CloudBookJournal.ConflictChoice) {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                try await model.resolveStandaloneBookConflict(item, scope: inspection.scope, choice: choice,
+                                                              accountIsCurrent: { try await service.validate(inspection) })
+                try await refreshReviews(service: service, inspection: inspection)
+                message = "The book choice is ready for the next recovery pass."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+
+    private func reviewDeletion(_ item: StandaloneDeletedBackupItem, restoreBackup: Bool) {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                try await model.reviewStandaloneDeletedBackup(item, scope: inspection.scope, restoreBackup: restoreBackup,
+                                                               accountIsCurrent: { try await service.validate(inspection) })
+                try await refreshReviews(service: service, inspection: inspection)
+                message = restoreBackup ? "The device copy is queued for the next recovery pass." : "The device copy is kept without an iCloud backup."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+
+    private func checkAccount() {
+        busy = true; message = nil; inspection = nil; reviews = []; incoming = []; conflicts = []; bookConflicts = []; deletedBackups = []
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                let service = try model.makeStandaloneCloudRecoveryService()
+                let value = try await service.inspect()
+                await model.loadOnDeviceLibrary()
+                if !model.canSwitchStandaloneRecoveryAccount(scope: value.scope) {
+                    try await model.checkStandaloneRecoveryScope(value.scope)
+                }
+                try Task.checkCancellation()
+                self.service = service; inspection = value
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+    private func createZone() {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                let ready = try await service.createAfterReviewedDecision(inspection)
+                try Task.checkCancellation()
+                self.inspection = ready
+                message = model.canSwitchStandaloneRecoveryAccount(scope: ready.scope)
+                    ? "Recovery is ready. Review the account switch to continue."
+                    : "Recovery is ready. Choose Sync and Restore to begin."
+            } catch { if !Task.isCancelled { self.inspection = nil; message = UserFacingError.message(error) } }
+        }
+    }
+    private func switchRecoveryAccount() {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                try await service.switchRecoveryAccount(inspection)
+                try Task.checkCancellation()
+                try await model.checkStandaloneRecoveryScope(inspection.scope)
+                try await refreshReviews(service: service, inspection: inspection)
+                message = "Account changed. Review any differences, then choose Sync and Restore."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+    private func runRecovery(_ inspection: StandaloneCloudRecoveryService.Inspection) {
+        guard let service else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                let result = try await service.run(inspection)
+                try Task.checkCancellation()
+                try await refreshReviews(service: service, inspection: inspection)
+                if !result.failures.isEmpty || result.needsReview > 0 || result.pendingItems > 0 {
+                    message = "Some items could not be synchronized or need review. Your local data is kept. Some deletions or different editions may need further review. Your changes may not yet be backed up."
+                } else {
+                    message = "Recovery pass finished. Check your books on each device before relying on recovery."
+                }
+            } catch { if !Task.isCancelled { self.inspection = nil; message = UserFacingError.message(error) } }
+        }
+    }
 }

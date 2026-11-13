@@ -578,5 +578,86 @@ const fireTimer=()=>{const callback=[...timers.values()].at(-1);timers.clear();r
  releaseCounter();await Promise.all([obsoleteCount,finalCount]);
  assert.equal(allocations,1,'Only newest queued page counter allocates a publication');
 
+ // Hidden WebKit relocations must not replace the last visible scroll position.
+ const visibilityMessages=[], visibilityDisplays=[];
+ const visibilityContext={window:{webkit:{messageHandlers:{reader:{postMessage:m=>visibilityMessages.push(m)}}}},
+   document:{visibilityState:'visible',documentElement:{dataset:{},style:{setProperty(){}}},
+     getElementById:()=>({getBoundingClientRect:()=>({width:375,height:700})}),querySelectorAll:()=>[]},
+   setTimeout:context.setTimeout,clearTimeout:context.clearTimeout,requestAnimationFrame:fn=>fn()};
+ visibilityContext.ePub={CFI:class {compare(a,b){return Number(a)-Number(b)}}};
+ visibilityContext.fixtureRendition={location:{start:{cfi:'60',href:'chapter',index:0},end:{cfi:'70'}},
+   manager:{},reportLocation:async()=>{},display:async cfi=>{visibilityDisplays.push(cfi);visibilityContext.fixtureRendition.location={start:{cfi:'60',href:'chapter',index:0},end:{cfi:'70'}}}};
+ vm.createContext(visibilityContext);
+ vm.runInContext(fs.readFileSync('App/Resources/Reader/reader.js','utf8'),visibilityContext);
+ vm.runInContext('ready=true;scrolling=true;current="65";rendition=fixtureRendition;book={locations:{percentageFromCfi:()=>0.65}};updatePageInformation=()=>{};refreshNoteMarkers=()=>{};',visibilityContext);
+ visibilityContext.document.visibilityState='hidden';
+ vm.runInContext('onReaderVisibilityChange();rendition.location={start:{cfi:"0",href:"start",index:0},end:{cfi:"2"}};reportPosition(rendition.location)',visibilityContext);
+ assert.equal(vm.runInContext('current',visibilityContext),'65','A hidden relocation must not replace the saved passage');
+ assert.equal(visibilityMessages.filter(m=>m.kind==='position').length,0,'No hidden position is persisted');
+ visibilityContext.document.visibilityState='visible';
+ await vm.runInContext('resumeVisiblePassage(++visibilityGeneration)',visibilityContext);
+ assert.deepEqual(visibilityDisplays,['65'],'A displaced visible renderer returns to the saved passage');
+ assert.equal(vm.runInContext('current',visibilityContext),'65','The precise passage survives restoration');
+ assert.equal(visibilityMessages.filter(m=>m.kind==='position').length,1,'Only the restored position is reported');
+ vm.runInContext('rendition.location={start:{cfi:"80",href:"chapter",index:0},end:{cfi:"90"}};reportPosition(rendition.location)',visibilityContext);
+ assert.equal(vm.runInContext('current',visibilityContext),'80','Subsequent reading updates the saved position normally');
+ vm.runInContext('visibilityAnchor="65";resizeAnchor="65";resizeBoundary="60";cancelVisibilityRestore({type:"keydown",key:"a"})',visibilityContext);
+ assert.equal(vm.runInContext('visibilityAnchor',visibilityContext),'65','Unrelated keyboard input cannot abandon the saved passage');
+ vm.runInContext('cancelVisibilityRestore({type:"touchmove"})',visibilityContext);
+ assert.equal(vm.runInContext('visibilityAnchor',visibilityContext),null,'Deliberate scrolling releases the restore guard');
+ assert.equal(vm.runInContext('resizeAnchor',visibilityContext),null,'A deliberate scroll also clears any earlier layout anchor');
+
+ // A second lock during the asynchronous visibility check must invalidate
+ // the first resume, without persisting or navigating to a stale viewport.
+ let releaseVisibilityReport;
+ visibilityContext.slowReport=()=>new Promise(resolve=>{releaseVisibilityReport=resolve});
+ visibilityContext.document.visibilityState='hidden';
+ vm.runInContext('onReaderVisibilityChange();rendition.location={start:{cfi:"0",href:"start",index:0},end:{cfi:"2"}};rendition.reportLocation=slowReport',visibilityContext);
+ visibilityContext.document.visibilityState='visible';
+ const priorPositions=visibilityMessages.filter(m=>m.kind==='position').length;
+ const priorDisplays=visibilityDisplays.length;
+ const interruptedResume=vm.runInContext('resumeVisiblePassage(++visibilityGeneration)',visibilityContext);
+ await tick();
+ visibilityContext.document.visibilityState='hidden';
+ vm.runInContext('onReaderVisibilityChange()',visibilityContext);
+ releaseVisibilityReport(); await interruptedResume;
+ assert.equal(visibilityMessages.filter(m=>m.kind==='position').length,priorPositions,'A re-locked reader cannot persist an interrupted resume');
+ assert.equal(visibilityDisplays.length,priorDisplays,'A re-locked reader cannot navigate after the interrupted report');
+ assert.equal(vm.runInContext('visibilityAnchor',visibilityContext),'80','The last visible passage remains available for the next unlock');
+
+ // Once a WebKit display has started it cannot be cancelled. A deliberate
+ // seek must run after that display so the chosen destination wins.
+ let finishVisibilityDisplay, signalVisibilityDisplay;
+ const displayStarted = new Promise(resolve=>{signalVisibilityDisplay=resolve});
+ const navigationOrder=[];
+ visibilityContext.delayedDisplay=async()=>{navigationOrder.push('restore');signalVisibilityDisplay();await new Promise(resolve=>{finishVisibilityDisplay=resolve})};
+ visibilityContext.userSeek=async()=>{navigationOrder.push('seek')};
+ visibilityContext.document.visibilityState='visible';
+ vm.runInContext('rendition.reportLocation=async()=>{};rendition.display=delayedDisplay;seek=userSeek;scheduleVisibilityRestore(++visibilityGeneration)',visibilityContext);
+ await displayStarted;
+ const explicitSeek=vm.runInContext('window.readerCommand({name:"seek",value:{cfi:"95"}})',visibilityContext);
+ await tick();
+ assert.deepEqual(navigationOrder,['restore'],'A user seek waits for an already-started restoration display');
+ finishVisibilityDisplay(); await explicitSeek;
+ assert.deepEqual(navigationOrder,['restore','seek'],'Explicit navigation wins over the delayed restoration');
+
+ // A user scroll during an uncancellable WebKit display must prevent the
+ // follow-up offset correction and its location report.
+ let finishAbortedDisplay, signalAbortedDisplay;
+ const abortedStarted=new Promise(resolve=>{signalAbortedDisplay=resolve});
+ const afterScroll=[];
+ visibilityContext.delayedAbortDisplay=async()=>{signalAbortedDisplay();await new Promise(resolve=>{finishAbortedDisplay=resolve})};
+ visibilityContext.keepRestore=true;
+ visibilityContext.fixtureRendition.display=visibilityContext.delayedAbortDisplay;
+ visibilityContext.fixtureRendition.reportLocation=async()=>afterScroll.push('report');
+ visibilityContext.fixtureRendition.manager={views:{find:()=>({offset:()=>({top:100}),locationOf:()=>({top:200})})},scrollTo:()=>afterScroll.push('scroll')};
+ visibilityContext.bookForAbort={spine:{get:()=>({})}};
+ vm.runInContext('book=bookForAbort',visibilityContext);
+ const abortedDisplay=vm.runInContext('displayReadingLocation("epubcfi(/6/2!/4/2:3)",()=>keepRestore)',visibilityContext);
+ await abortedStarted;
+ visibilityContext.keepRestore=false; finishAbortedDisplay();
+ assert.equal(await abortedDisplay,false,'A cancelled restoration reports that it did not finish');
+ assert.deepEqual(afterScroll,[],'A user scroll stops later correction and stale position reporting');
+
  console.log('Reader bridge: cancellation, ownership, layout, resize, continuous-flow opening and mode restoration checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1});

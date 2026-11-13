@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 — private recovery, build 59
+
+- Private CloudKit recovery for managed standalone EPUB/PDF/CBZ originals, metadata and precise reading data; separate Jellyfin reading-data recovery.
+- Durable outboxes, conditional conflict review, tombstones, account/source/edition guards and interrupted-operation retries.
+- EPUB scroll-resume stability, edition-safe saved-position review and CBZ page-loading annotation guards.
+- Editable edition-aware bookmarks, annotation search and metadata-rich Markdown/JSON exports.
+- Offline/import/storage failure hardening, matched platform cloud configuration and updated privacy/distribution guidance.
+
+Owner-authorized GitHub source release. Live recovery, platform/accessibility/performance and final distribution acceptance remain tracked follow-up; the owner handles TestFlight. See [release notes](docs/releases/0.3.0.md).
+
 ## 0.2.5 alpha — build 56
 
 Reader and native UI refinements, with early local reading tools and offline-library features for testing. Reading data and imported books remain local; iCloud sync and restore are not connected. Gates #28 and #29 remain open. See [release notes](docs/releases/0.2.5.md) for scope and limitations.

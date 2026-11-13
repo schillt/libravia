@@ -465,6 +465,64 @@ async function pageTap(x) {
 // during display are coalesced and applied before reporting positions resumes.
 let layoutTask, pendingPreferences, pendingResize = false;
 let viewportSize, viewportObserver, pendingViewport, searchPresentation = false;
+// Preserve the last visible passage while WebKit is hidden or resuming.
+let visibilityAnchor = null, visibilityGeneration = 0, visibilityTask = Promise.resolve();
+function scheduleVisibilityRestore(generation) {
+  // A display already in flight cannot be cancelled by WebKit. Serialize
+  // restorations so an older display cannot finish after a newer one.
+  visibilityTask = visibilityTask.catch(() => {}).then(() => resumeVisiblePassage(generation));
+}
+function cancelVisibilityRestore(event) {
+  if (event?.type === 'keydown' && !['ArrowDown','ArrowUp','PageDown','PageUp','Home','End',' '].includes(event.key)) return;
+  if (!visibilityAnchor || document.visibilityState === 'hidden') return;
+  visibilityAnchor = null; visibilityGeneration++;
+  rebaseResizeAnchor();
+}
+async function resumeVisiblePassage(generation) {
+  const anchor = visibilityAnchor;
+  if (!anchor || !ready || !scrolling || document.visibilityState === 'hidden') return;
+  try {
+    await layoutTask;
+    await turnTask;
+    if (generation !== visibilityGeneration || document.visibilityState === 'hidden') return;
+    const bounds = document.getElementById('reader')?.getBoundingClientRect();
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
+    await withPaginationTimeout(rendition.reportLocation());
+    await nextPaint();
+    if (generation !== visibilityGeneration || document.visibilityState === 'hidden') return;
+    const parser = new ePub.CFI();
+    const containsAnchor = location => location?.start?.cfi && location?.end?.cfi &&
+      parser.compare(location.start.cfi, anchor) <= 0 && parser.compare(anchor, location.end.cfi) <= 0;
+    if (!containsAnchor(rendition.location)) {
+      const applied = await withPaginationTimeout(displayReadingLocation(anchor,
+        () => generation === visibilityGeneration && document.visibilityState !== 'hidden'));
+      if (!applied) return;
+      await withPaginationTimeout(rendition.reportLocation());
+      await nextPaint();
+    }
+    if (generation !== visibilityGeneration || document.visibilityState === 'hidden') return;
+    if (!containsAnchor(rendition.location)) throw Error('The saved passage is unavailable');
+    // Keep the precise passage, not the start of its newly rendered viewport.
+    resizeAnchor = anchor; resizeBoundary = rendition.location.start.cfi;
+    visibilityAnchor = null;
+    reportPosition(rendition.location);
+  } catch (_) {
+    // Keep the saved passage; deliberate navigation releases the guard.
+  }
+}
+function onReaderVisibilityChange() {
+  if (!ready || !scrolling) return;
+  if (document.visibilityState === 'hidden') {
+    if (!visibilityAnchor) visibilityAnchor = current || rendition?.location?.start?.cfi || null;
+    visibilityGeneration++;
+  } else if (visibilityAnchor) {
+    const generation = ++visibilityGeneration;
+    scheduleVisibilityRestore(generation);
+  }
+}
+document.addEventListener?.('visibilitychange', onReaderVisibilityChange);
+for (const event of ['touchmove', 'wheel', 'keydown'])
+  document.addEventListener?.(event, cancelVisibilityRestore, {capture:true, passive:true});
 // The reader's precise passage survives geometry changes; EPUB.js reports
 // the start of the newly aligned spread, which is a different location.
 let resizeAnchor = null, resizeBoundary = null, resizeOrigin = null;
@@ -536,9 +594,14 @@ function resizeViewport(size) {
       scheduleLiveSettlement();
     }
   }
-  if (!pendingViewport && viewportSize?.width === next.width && viewportSize?.height === next.height) return;
-  pendingViewport = next;
-  queueLayout(undefined, true);
+  if (pendingViewport || viewportSize?.width !== next.width || viewportSize?.height !== next.height) {
+    pendingViewport = next;
+    queueLayout(undefined, true);
+  }
+  if (visibilityAnchor && document.visibilityState !== 'hidden') {
+    const generation = ++visibilityGeneration;
+    scheduleVisibilityRestore(generation);
+  }
 }
 function queueLayout(p, resize = false) {
   if (p) p = {...latestPreferences,...p};
@@ -756,14 +819,39 @@ async function chapterSnippet(value) {
   }
   send('chapterSnippet', {number:value.number, text:snippet});
 }
+let positioning = 0;
+async function displayReadingLocation(target, isCurrent = () => true) {
+  if (!scrolling || typeof target !== 'string' || !target.startsWith('epubcfi(')) {
+    await rendition.display(target);
+    return isCurrent();
+  }
+  positioning++;
+  try {
+    await rendition.display(target);
+    if (!isCurrent()) return false;
+    await nextPaint();
+    if (!isCurrent()) return false;
+    const manager = rendition.manager, section = book?.spine?.get?.(target);
+    const view = section && manager?.views?.find?.(section);
+    const sectionTop = view?.offset?.().top, targetTop = view?.locationOf?.(target).top;
+    if (Number.isFinite(sectionTop) && Number.isFinite(targetTop) && typeof manager?.scrollTo === 'function') {
+      manager.scrollTo(0, Math.max(0, sectionTop + targetTop), true);
+      await nextPaint();
+      if (!isCurrent()) return false;
+    }
+  } finally { positioning--; }
+  await rendition.reportLocation();
+  await nextPaint();
+  return isCurrent();
+}
 async function seek(value) {
-  if (value.cfi) { try { await rendition.display(value.cfi); return; } catch (_) {} }
-  await rendition.display(book.locations.cfiFromPercentage(Math.min(1,Math.max(0,value.fraction || 0))));
+  if (value.cfi) { try { await displayReadingLocation(value.cfi); return; } catch (_) {} }
+  await displayReadingLocation(book.locations.cfiFromPercentage(Math.min(1,Math.max(0,value.fraction || 0))));
 }
 async function displayLocation(target) {
   const previous = current || rendition.location?.start?.cfi;
   try {
-    await rendition.display(target);
+    await displayReadingLocation(target);
     if (target.startsWith('epubcfi(') && !savedHighlights.has(target) && !searchHighlights.has(target)) {
       try { rendition.annotations.highlight(target, {}, null, 'search-match', {fill:'#e6b84a','fill-opacity':'0.35'}); searchHighlights.add(target); }
       catch (_) { /* A highlight failure must not invalidate a successful jump. */ }
@@ -865,7 +953,7 @@ function refreshChapterBreaks() {
   }
 }
 function reportPosition(location) {
-  if (restoring || previewing || !location?.start?.cfi) return;
+  if (restoring || previewing || positioning || document.visibilityState === 'hidden' || visibilityAnchor || !location?.start?.cfi) return;
   if (resizeAnchor && resizeBoundary && location.start.cfi !== resizeBoundary) rebaseResizeAnchor();
   current = resizeAnchor || location.start.cfi;
   updatePageInformation(location);
@@ -968,8 +1056,15 @@ async function renderSnapshot(value) {
 
 window.readerCommand = async ({name,value}) => {
   try {
+    if (['next', 'previous', 'location', 'seek', 'layoutPage'].includes(name)) {
+      cancelVisibilityRestore();
+      // Let any uncancellable restore display finish before navigating to the
+      // place explicitly chosen by the reader.
+      await visibilityTask;
+    }
     switch(name) {
       case 'open':
+        visibilityAnchor = null; visibilityGeneration++;
         publicationTitle = typeof value.title === 'string' ? value.title.trim().slice(0,1024) : '';
         rebaseResizeAnchor();
         clearInterval(selectionPoll); selectionPoll = undefined; lastPolledSelection = ''; lastSelectionContext = ''; sidebarReadyRequest = null; releaseSidebarHold(); endSidebarLive(); sidebarLayoutHealthy = true;
@@ -1005,6 +1100,8 @@ window.readerCommand = async ({name,value}) => {
         // Strip active and remote content before any chapter is rendered.
         book.spine.hooks.content.register(sanitizePublication);
         rendition.hooks.content.register(contents => {
+          for (const event of ['touchmove', 'wheel', 'keydown'])
+            contents.document?.addEventListener(event, cancelVisibilityRestore, {capture:true, passive:true});
           observeSelection(contents);
           if (nativePageTurns) return; // iOS recognizes swipes on WKWebView's scroll view.
           let start;
