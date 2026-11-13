@@ -1,10 +1,10 @@
 # LibraVia roadmap to version 1.0
 
-LibraVia will be a beautiful native reading hub for iPhone, iPad, and Mac on Apple OS 27. Everyday readers can connect self-hosted libraries or import their own books, read offline, highlight passages, take notes, and synchronize the reading data their existing servers support. Version 1.0 is quality-led; milestones have acceptance gates rather than calendar deadlines.
+LibraVia will be a beautiful native reading hub for iPhone, iPad, and Mac on Apple OS 27. Readers can connect a self-hosted library or select their own book folder without a server, read offline, highlight passages, take notes, and synchronize reading data. Use verified server capabilities and private iCloud where server support is absent. Version 1.0 is quality-led; milestones have acceptance gates rather than calendar deadlines.
 
 ## Current checkpoint
 
-The owner designated the integrated native reader work as the v0.2.0 alpha source release on 2026-10-08. See [release notes](releases/0.2.0.md) and [handoff](HANDOFF.md). This source-release designation does not assert unrecorded physical/server/distribution acceptance: gate #28 remains open for its documented checks. Next implementation milestone: 0.3 dependable offline library, alongside remaining reader acceptance and provider feasibility research.
+The owner authorized 0.2.5 as an alpha prerelease on 2026-11-03, separating the delivered reader/native UI and early local tools from the unfinished 0.3 reliability and iCloud outcomes. See [0.2.5 scope](releases/0.2.5.md). This prerelease does not close gate #28 or #29. Build 55's 0.2.0 alpha source was promoted to beta through PR #63; beta, preview and main receive no new promotion with 0.2.5.
 
 ## Product promises
 
@@ -14,17 +14,20 @@ The owner designated the integrated native reader work as the v0.2.0 alpha sourc
 - Keep highlights, notes, bookmarks, and exports.
 - Understand each source's progress and annotation sync capabilities.
 
-Libraries remain separate by source. **On My Device** is a separate local library whose reading data remains local for 1.0. Provider-specific capabilities are visible during setup and in settings.
+Libraries remain separate by source. A user's chosen book folder is a standalone source; selected book files and reading data are intended to sync through private iCloud. Provider-specific capabilities and sync status must be visible during setup and in settings. See [ADR 0006](adr/0006-icloud-and-user-book-folder.md).
 
 ## Milestones and gates
+
+Reader work follows [ADRs 0007–0010](adr/README.md) and the [reader architecture and polish plan](READER_ARCHITECTURE_PLAN.md): use Apple Books as the observable reading reference, pair visual improvements with incremental native integration work, and honor every committed swipe quickly and in order. The former replaceable-pending-turn suggestion is withdrawn. These accepted requirements do not imply implementation or acceptance is complete.
 
 | Version | Outcome | Key work | Acceptance gate |
 | --- | --- | --- | --- |
 | 0.2 | Native reading experience | Consistent visual foundation; quiet controls; optional persistent reading information; adaptive contents/appearance panels; EPUB/PDF/comic navigation; performance baselines. | Sustained physical iPhone/iPad and native Mac reading with unobscured content, stable positions, and responsive interactions. |
-| 0.3 | Dependable offline library | Durable downloads separate from disposable cache; download queue/retry/cancellation; storage management; local EPUB/PDF/CBZ import; offline metadata. | Restart without a network connection and open saved/imported books; device-copy removal preserves reading data and server files. |
+| 0.2.5 alpha | Reader and native UI checkpoint | Reader/inspector/resize and catalog polish; native local reading tools and experimental offline features; screen-awake option. | Development builds and bounded checks; physical/platform/server acceptance remains open. |
+| 0.3 | Dependable offline, reading-tool reliability and iCloud | Durable downloads, recoverable queue, storage management, local import and user-selected book folder; polish reader interactions; local highlights, notes, editable bookmarks, annotation navigation and export. Private iCloud sync is required for unsupported reading data and standalone book files. | Restart offline, restore standalone books and reading data on another device, preserve reading data across removal and reflow, and accept reader interactions on physical devices and Mac. |
 | 0.4 | Multiple sources | Saved connections; separate source libraries; OPDS; native Kavita/Komga; BookLore/Storyteller feasibility. | Named real-server releases pass authentication, catalog/pagination, acquisition, download, and account-isolation checks. |
-| 0.5 | Highlights and annotations | EPUB/text-PDF highlights and attached notes; editable bookmarks; comic/scanned-PDF page notes; annotation lists/search/jump; Markdown/JSON export. | Reading data survives relaunch, layout changes, and device-copy removal; locations and exports retain meaningful context. |
-| 0.6 | Supported-server sync | Native progress/annotation adapters; offline queues; retry; conflict preservation; deletion recovery; capability/status disclosure. | Two-device/server round trips without silent loss, duplicate notes, or deleted annotations reappearing. |
+| 0.5 | Reading tools follow-up | Reassess remaining gaps and hardening after the local tools planned for 0.3; do not duplicate features already delivered. | Set a concrete gate based on demonstrated gaps after 0.3 acceptance. |
+| 0.6 | Supported-server sync | Expand verified native progress/annotation adapters; offline queues; retry; conflict preservation; deletion recovery; capability/status disclosure. | Two-device/server and iCloud round trips without silent loss, duplicate notes, or deleted annotations reappearing. |
 | 0.7 | Library organization | Series order/next-book navigation; favorites; source-scoped reading queues; reading-status controls. | Predictable organization despite absent metadata, disconnected servers, and different provider capabilities. |
 | 0.8 | Platform polish and accessibility | Complete iPhone/iPad/Mac tailoring; VoiceOver; larger interface text; Reduce Motion; keyboard/pointer flows; onboarding/recovery; performance targets. | Complete accessible reading journeys on each platform, measured against the 0.2 baselines. |
 | 0.9 | Release candidate beta | Freeze feature scope; exercise provider/format/platform compatibility; triage beta defects. | Complete daily-use journeys and no unresolved release-blocking defects. |
@@ -58,6 +61,6 @@ BookLore and Storyteller remain investigation targets. Record named versions, au
 
 Exercise connect/import → find → save offline → read → annotate → close/reopen → synchronize where supported → export. Include large/unusual EPUBs, text/scanned PDFs, large comics, missing metadata, expired credentials, interrupted downloads, low storage, simultaneous offline edits, and changed server items.
 
-Version 1.0 supports DRM-free EPUB, PDF, and CBZ. Sync uses existing servers only. Audiobooks, immersive narration, DRM, OCR, advanced drawing tools, social features, automatic cross-source merging, a required iCloud backend, and a LibraVia companion service are deferred.
+Version 1.0 supports DRM-free EPUB, PDF, and CBZ. Sync uses verified server APIs and private iCloud as needed; local reading remains available without iCloud. Audiobooks, immersive narration, DRM, OCR, advanced drawing tools, social features, automatic cross-source merging, and a LibraVia companion service are deferred.
 
 The 0.2 implementation is integrated into alpha. Continue its open acceptance work while preparing 0.3; provider feasibility work can proceed independently. Design, accessibility, and reliability are requirements in every milestone; 0.8 completes their cross-platform acceptance.

@@ -11,6 +11,25 @@ typealias PlatformViewRepresentable = NSViewRepresentable
 struct PreparedBook { let document: URL; let images: [URL]; let position: ReadingPosition }
 struct ReadingPosition { var fraction = 0.0; var page = 0 }
 struct ReaderLink { var id: String; var title: String; var context: String? = nil }
+struct PDFAnnotationRect: Equatable {
+    var x: Double, y: Double, width: Double, height: Double
+    var isValid: Bool { [x, y, width, height].allSatisfy(\.isFinite) && width > 0 && height > 0 }
+}
+struct PDFTextSelection: Equatable { var page: Int; var rectangles: [PDFAnnotationRect]; var text: String }
+enum AnnotationAnchor: Equatable { case pdf(page: Int, selections: [PDFAnnotationRect]); case page(Int) }
+struct ReadingAnnotation: Equatable {
+    var anchor: AnnotationAnchor
+    var contentFingerprint: String?
+    func availablePage(fingerprint: String?, pageCount: Int) -> Int? {
+        guard let fingerprint, fingerprint == contentFingerprint else { return nil }
+        let page: Int
+        switch anchor {
+        case .page(let index): page = index
+        case .pdf(let index, let rects): guard !rects.isEmpty, rects.allSatisfy(\.isValid) else { return nil }; page = index
+        }
+        return (0..<pageCount).contains(page) ? page : nil
+    }
+}
 enum SearchState { case idle, failed }
 @MainActor final class ReaderController {
     var position = ReadingPosition()
@@ -23,6 +42,9 @@ enum SearchState { case idle, failed }
     var searching = false
     var searchState = SearchState.idle
     var results: [ReaderLink] = []
+    var pdfSelection: PDFTextSelection?
+    var controlsVisible = false
+    var navigationError = false
     var command: ((String, Any?) -> Void)?
     func update(_ position: ReadingPosition) { self.position = position }
     func tapped(at: Double, canTurn: Bool = true) {}
@@ -97,6 +119,19 @@ enum SearchState { case idle, failed }
             precondition(controller.position.page == 0 && view.currentSelection == nil, "Jump-back restores page and releases search selection")
         }
         let firstPage = document.page(at: 0)!
+        if let selected = firstPage.selection(for: NSRange(location: 0, length: 12)), let text = selected.string, !text.isEmpty {
+            view.setCurrentSelection(selected, animate: false)
+            coordinator.selectionChanged()
+            guard let captured = controller.pdfSelection else { fatalError("Text selection was not captured") }
+            precondition(captured.page == 0 && captured.text == text.trimmingCharacters(in: .whitespacesAndNewlines))
+            let highlight = ReadingAnnotation(anchor: .pdf(page: 0, selections: captured.rectangles), contentFingerprint: "edition")
+            let originalAnnotations = firstPage.annotations.count
+            coordinator.updateHighlights([highlight], fingerprint: "edition")
+            precondition(!(view.highlightedSelections ?? []).isEmpty, "Matching highlight must be rendered")
+            precondition(firstPage.annotations.count == originalAnnotations, "Highlighting must not add document annotations")
+            coordinator.updateHighlights([highlight], fingerprint: "other")
+            precondition((view.highlightedSelections ?? []).isEmpty, "Changed edition must not display saved highlight")
+        } else { fatalError("Fixture must contain selectable text") }
         let annotation = PDFAnnotation(bounds: CGRect(x: 30, y: 30, width: 80, height: 30), forType: .link, withProperties: nil)
         firstPage.addAnnotation(annotation)
         let point = view.convert(CGPoint(x: 60, y: 45), from: firstPage)

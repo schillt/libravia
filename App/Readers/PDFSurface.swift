@@ -4,6 +4,8 @@ import PDFKit
 struct PDFSurface: PlatformViewRepresentable {
     let prepared: PreparedBook
     let controller: ReaderController
+    let annotations: [ReadingAnnotation]
+    let fingerprint: String?
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
     private func make(_ coordinator: Coordinator) -> PDFView {
         let view = PositionPreservingPDFView()
@@ -30,6 +32,8 @@ struct PDFSurface: PlatformViewRepresentable {
         #endif
         if let page = document.page(at: min(max(0, prepared.position.page), document.pageCount - 1)) { view.go(to: page) }
         coordinator.observer = NotificationCenter.default.addObserver(forName: .PDFViewPageChanged, object: view, queue: .main) { [weak coordinator] _ in MainActor.assumeIsolated { coordinator?.pageChanged() } }
+        coordinator.selectionObserver = NotificationCenter.default.addObserver(forName: .PDFViewSelectionChanged, object: view, queue: .main) { [weak coordinator] _ in MainActor.assumeIsolated { coordinator?.selectionChanged() } }
+        coordinator.updateHighlights(annotations, fingerprint: fingerprint)
         Task { @MainActor [weak coordinator] in
             guard let coordinator, coordinator.active, coordinator.view === view else { return }
             controller.pageCount = document.pageCount; controller.ready = true
@@ -41,11 +45,11 @@ struct PDFSurface: PlatformViewRepresentable {
     }
     #if os(macOS)
     func makeNSView(context: Context) -> PDFView { make(context.coordinator) }
-    func updateNSView(_ view: PDFView, context: Context) {}
+    func updateNSView(_ view: PDFView, context: Context) { context.coordinator.updateHighlights(annotations, fingerprint: fingerprint) }
     static func dismantleNSView(_ view: PDFView, coordinator: Coordinator) { coordinator.cleanup() }
     #else
     func makeUIView(context: Context) -> PDFView { make(context.coordinator) }
-    func updateUIView(_ view: PDFView, context: Context) {}
+    func updateUIView(_ view: PDFView, context: Context) { context.coordinator.updateHighlights(annotations, fingerprint: fingerprint) }
     static func dismantleUIView(_ view: PDFView, coordinator: Coordinator) { coordinator.cleanup() }
     #endif
     @MainActor final class Coordinator: NSObject, PDFDocumentDelegate {
@@ -55,6 +59,9 @@ struct PDFSurface: PlatformViewRepresentable {
         weak var view: PDFView?
         let controller: ReaderController
         var observer: NSObjectProtocol?
+        var selectionObserver: NSObjectProtocol?
+        var renderedAnnotations: [ReadingAnnotation] = []
+        var renderedFingerprint: String?
         var selections: [String: PDFSelection] = [:]
         var restoringLayout = false
         var active = true
@@ -67,8 +74,49 @@ struct PDFSurface: PlatformViewRepresentable {
             searchDocument?.cancelFindString()
             searchDocument = nil
             if let observer { NotificationCenter.default.removeObserver(observer) }
+            if let selectionObserver { NotificationCenter.default.removeObserver(selectionObserver) }
             observer = nil
+            selectionObserver = nil
+            controller.pdfSelection = nil
             controller.command = nil
+        }
+        func selectionChanged() {
+            guard active, let view, let document = view.document, let selection = view.currentSelection,
+                  selection.pages.count == 1, let page = selection.pages.first,
+                  let text = selection.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+                controller.pdfSelection = nil; return
+            }
+            let index = document.index(for: page)
+            guard index >= 0, index < document.pageCount else { controller.pdfSelection = nil; return }
+            let rectangles = selection.selectionsByLine().map { $0.bounds(for: page) }.filter { !$0.isNull && !$0.isEmpty }
+                .map { PDFAnnotationRect(x: $0.origin.x, y: $0.origin.y, width: $0.width, height: $0.height) }
+            guard !rectangles.isEmpty, rectangles.allSatisfy(\.isValid) else { controller.pdfSelection = nil; return }
+            controller.pdfSelection = PDFTextSelection(page: index, rectangles: rectangles, text: text)
+            controller.controlsVisible = true
+        }
+        func updateHighlights(_ annotations: [ReadingAnnotation], fingerprint: String?) {
+            guard let view, let document = view.document,
+                  annotations != renderedAnnotations || fingerprint != renderedFingerprint else { return }
+            renderedAnnotations = annotations; renderedFingerprint = fingerprint
+            var highlights: [PDFSelection] = []
+            for annotation in annotations {
+                guard let pageIndex = annotation.availablePage(fingerprint: fingerprint, pageCount: document.pageCount),
+                      case .pdf(_, let rectangles) = annotation.anchor, let page = document.page(at: pageIndex) else { continue }
+                let bounds = page.bounds(for: view.displayBox)
+                for rect in rectangles {
+                    let area = CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)
+                    guard bounds.contains(area), let selection = page.selection(for: area) else { continue }
+                    #if os(macOS)
+                    let colors: [String: NSColor] = ["yellow": .systemYellow, "green": .systemGreen, "blue": .systemBlue, "pink": .systemPink, "purple": .systemPurple]
+                    selection.color = (colors[annotation.color ?? "yellow"] ?? .systemYellow).withAlphaComponent(0.45)
+                    #else
+                    let colors: [String: UIColor] = ["yellow": .systemYellow, "green": .systemGreen, "blue": .systemBlue, "pink": .systemPink, "purple": .systemPurple]
+                    selection.color = (colors[annotation.color ?? "yellow"] ?? .systemYellow).withAlphaComponent(0.45)
+                    #endif
+                    highlights.append(selection)
+                }
+            }
+            view.highlightedSelections = highlights
         }
         #if os(iOS)
         @objc func tapped(_ gesture: UITapGestureRecognizer) {
@@ -124,6 +172,12 @@ struct PDFSurface: PlatformViewRepresentable {
             case "zoomOut": view.zoomOut(nil)
             case "fit": view.autoScales = true
             case "page": if let index = value as? Int, let page = document.page(at: index) { view.clearSelection(); view.go(to: page) }
+            case "pdfHighlight":
+                guard let note = value as? ReadingAnnotation, let index = note.availablePage(fingerprint: renderedFingerprint, pageCount: document.pageCount),
+                      case .pdf(_, let rectangles) = note.anchor, let rect = rectangles.first, let page = document.page(at: index) else { return }
+                let area = CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)
+                guard page.bounds(for: view.displayBox).contains(area) else { controller.navigationError = true; return }
+                view.clearSelection(); view.go(to: area, on: page)
             case "location":
                 if let key = value as? String, let selection = selections[key] { view.setCurrentSelection(selection, animate: true); view.go(to: selection) }
                 else if let key = value as? String, let index = Int(key), let page = document.page(at: index) { view.clearSelection(); view.go(to: page) }
