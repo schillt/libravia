@@ -1,6 +1,13 @@
-html,body,#reader{margin:0;width:100%;height:100%;overflow:hidden}body{background:#fff}*{box-sizing:border-box}
-#reader{view-transition-name:page}
-::view-transition-old(root),::view-transition-new(root){animation:none}
+html,body,#page{margin:0;width:100%;height:100%;overflow:hidden;background:var(--reader-paper,#fff)}*{box-sizing:border-box}
+#page{position:relative;view-transition-name:page}
+#reader{position:absolute;top:0;bottom:0;left:0;width:100%;height:100%;overflow:hidden}
+#page-chapter,#page-progress{position:absolute;left:24px;right:24px;text-align:center;font:500 12px -apple-system,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.75}
+#page-chapter{top:0;display:grid;align-content:center;padding-bottom:0;white-space:normal;overflow-wrap:anywhere;line-height:1.2}
+#chapter-title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;text-overflow:ellipsis;min-width:0}
+#page-progress{bottom:0;display:flex;align-items:center;justify-content:center}
+#page-chapter[hidden],#page-progress[hidden]{display:none}
+::view-transition{background:var(--reader-paper,#fff)}
+::view-transition-group(root),::view-transition-old(root),::view-transition-new(root){animation:none}
 ::view-transition-group(page){overflow:hidden}
 html[data-page-style="slide"][data-page-turn="next"]::view-transition-old(page){animation:page-out-left 290ms cubic-bezier(.24,.7,.22,1) both}
 html[data-page-style="slide"][data-page-turn="next"]::view-transition-new(page){animation:page-in-right 290ms cubic-bezier(.24,.7,.22,1) both}
@@ -15,3 +22,25 @@ html[data-page-style="fade"]::view-transition-new(page){animation:page-fade-in 2
 @keyframes page-fade-out{to{opacity:0}}
 @keyframes page-fade-in{from{opacity:0}}
 @media(prefers-reduced-motion:reduce){::view-transition-old(page),::view-transition-new(page){animation:none!important}}
+
+/* Decoration lives outside publication frames, preserving EPUB CFI indices. */
+.reader-chapter-break { position:absolute; top:-36px; left:0; right:0; height:28px; display:flex; align-items:center; gap:14px; justify-content:center; font:500 13px -apple-system,sans-serif; color:inherit; opacity:.7; pointer-events:none; }
+.reader-chapter-break::before, .reader-chapter-break::after { content:""; flex:1; height:1px; background:currentColor; opacity:.3; }
+
+/* Hold only explicit sidebar/typography changes; direct window resizing is live.
+   Dissolve painted layers without stretching glyphs or publication layout. */
+html[data-page-reflow]::view-transition-group(page){animation:none!important}
+html[data-page-reflow="viewport"]::view-transition-old(page){animation:page-fade-out 240ms ease-out both}
+html[data-page-reflow="viewport"]::view-transition-new(page){animation:page-fade-in 240ms ease-out both}
+html[data-page-reflow="typography"]::view-transition-old(page){animation:page-fade-out 180ms ease-out both}
+html[data-page-reflow="typography"]::view-transition-new(page){animation:page-fade-in 180ms ease-out both}
+@media(prefers-reduced-motion:reduce){html[data-page-reflow]::view-transition-old(page),html[data-page-reflow]::view-transition-new(page){animation:none!important;filter:none;transform:none}}
+
+/* Annotation buttons live in the trusted shell margin, not the publication DOM. */
+.reader-note-marker{position:absolute;right:2px;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:inherit;font:18px -apple-system,sans-serif;cursor:pointer;z-index:5;padding:0;}
+.reader-note-marker:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+
+/* EPUB.js gives underline hit rectangles no fill but leaves them inheriting
+   the group stroke; only the actual underline line should be painted. */
+.saved-underline rect{stroke:none}
+.saved-underline line{stroke:inherit;stroke-width:inherit}
