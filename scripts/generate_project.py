@@ -32,9 +32,10 @@ phases = [add(name+'sources','{isa = PBXSourcesBuildPhase; buildActionMask = 214
 settings = {
     'PRODUCT_NAME':'LibraVia',
     'PRODUCT_BUNDLE_IDENTIFIER':'com.chameleonenterprise.LibraVia',
+    'LIBRAVIA_ICLOUD_CONTAINER':'iCloud.$(PRODUCT_BUNDLE_IDENTIFIER)',
     'SWIFT_VERSION':'5.0', 'GENERATE_INFOPLIST_FILE':'YES',
     'INFOPLIST_KEY_CFBundleDisplayName':'LibraVia',
-    'MARKETING_VERSION':'0.2.5', 'CURRENT_PROJECT_VERSION':'56',
+    'MARKETING_VERSION':'0.3.0', 'CURRENT_PROJECT_VERSION':'59',
     'ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon',
     'CODE_SIGN_STYLE':'Automatic', 'SWIFT_EMIT_LOC_STRINGS':'YES',
     'SDKROOT':'auto', 'SUPPORTED_PLATFORMS':'iphoneos iphonesimulator macosx',
@@ -49,6 +50,7 @@ settings = {
     'ENABLE_APP_SANDBOX[sdk=macosx*]':'YES',
     'ENABLE_USER_SELECTED_FILES[sdk=macosx*]':'readwrite',
     'CODE_SIGN_ENTITLEMENTS[sdk=macosx*]':'Configuration/LibraVia-macOS.entitlements',
+    'CODE_SIGN_ENTITLEMENTS[sdk=iphone*]':'Configuration/LibraVia-iOS.entitlements',
     'PROVISIONING_PROFILE_REQUIRED[sdk=macosx*]':'YES',
     'ENABLE_OUTGOING_NETWORK_CONNECTIONS[sdk=macosx*]':'YES',
 }

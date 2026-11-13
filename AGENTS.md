@@ -2,9 +2,23 @@
 
 LibraVia is a native Apple OS 27 reading hub for DRM-free EPUB, PDF, and CBZ books. Start with the assigned GitHub issue and its latest comments. Current explicit owner instructions take precedence over repository guidance. Do not infer authorization to merge, promote, distribute, or publish a release from authorization to implement a feature.
 
+Owner instructions: never upload Codex local branches. A specifically authorized release may be published through a clean release branch/snapshot and reviewed PRs; preserve the local development branch and exclude untracked workflow/signing artifacts. Do not infer future merge/promotion/publication authority from this release. TestFlight is owner-operated through Xcode Cloud: do not upload local IPA/PKG files, submit compliance, enable testers or submit App Store review without a new explicit request.
+
 ## Current checkpoint
 
-Version 0.2.0 is integrated on alpha; begin with [HANDOFF.md](docs/HANDOFF.md), [release notes](docs/releases/0.2.0.md) and [VALIDATION.md](VALIDATION.md). Gate #28 remains open. Do not recreate superseded PRs #42/#44/#45/#46/#47/#51/#52/#56 or treat their closure as completed acceptance. The next implementation milestone is 0.3, with reader acceptance and UI polish continuing.
+Version **0.3.0/build 59** is the owner-authorized GitHub source release. Version 0.2.5 was first promoted unchanged through beta/preview to main (#67–#69). Start with [0.3.0 notes](docs/releases/0.3.0.md), [the implementation audit](docs/RELEASE_IMPLEMENTATION_AUDIT.md), [HANDOFF.md](docs/HANDOFF.md) and [VALIDATION.md](VALIDATION.md). The historical build 58 uploads are superseded; their processing does not validate this source.
+
+Implementation and locally available checks are complete. Physical/platform, accessibility/performance, live Jellyfin/iCloud account transitions, two-device/reinstall and final distribution checks remain explicit follow-up acceptance. Closing the source-delivery milestones does not mark unrun issue criteria as passed. Preserve their evidence and track the remaining work separately. Do not recreate superseded PRs #42/#44/#45/#46/#47/#51/#52/#56.
+
+## Lessons for future work
+
+- Finish locally actionable implementation before preparing distribution. Record checks requiring unavailable devices/services as pending and continue other release work; do not repeatedly ask to distribute merely to unblock validation.
+- Build success, installation, interaction, live-service acceptance and distribution are separate evidence. Record exact source/build/destination, use synthetic fixtures and sanitize public handoffs.
+- EPUB scroll mode must preserve an exact visible passage through lock/visibility/layout transitions. Disable status-bar scroll-to-top on live/preview iOS views; serialize restoration with explicit navigation and reject transient/stale position writes.
+- Verify actual content before restoring an earlier position or attaching annotations. Keep original-asset and renderer fingerprints distinct, require review for unknown/changed editions, and durably preserve the earlier place before replacement.
+- Retire reader readiness before asynchronous page decoding. Failed/cancelled decoding must not advance the durable position or allow annotations at an earlier page.
+- Keep the project generator and both platform entitlements/build metadata in parity. Bump a shipping build when replacing a previously uploaded source; do not reuse old distribution packages for newer code.
+- Reuse the existing LibraVia simulator; do not create one per build. Physical-device readiness requires pairing, connection, Developer Mode and an unlocked phone. An unavailable interaction tool is not a reason to stop independent source work.
 
 ## Read before work
 
@@ -26,9 +40,9 @@ Version 0.2.0 is integrated on alpha; begin with [HANDOFF.md](docs/HANDOFF.md), 
 - Keep Jellyfin and future provider DTOs inside their adapters. Core storage, identity, reading data, and reader commands must not depend on one provider's DTOs.
 - Scope reading data by source, account, and book. Equal titles do not prove equal books. Preserve legacy positions/bookmarks during migrations.
 - Save reading changes locally before network synchronization. Do not silently discard note conflicts, resurrect deleted annotations, or claim unsupported server sync.
-- A cache is disposable; an explicitly saved offline book must eventually use durable storage. Until milestone 0.3 lands, current downloaded cache entries are not permanent offline saves.
+- A cache is disposable; explicitly saved books use separate durable storage. Offline reliability and recovery remain subject to 0.3 acceptance.
 - Device-copy removal must never delete server files and must preserve reading data. Sign-out/forget-account behavior is a separate, explicitly defined operation.
-- Require no iCloud backend or LibraVia companion server for 1.0. Generic OPDS access does not imply annotation sync. BookLore and Storyteller native support remain investigation outcomes.
+- Local reading must work without iCloud; private iCloud recovery is required as described in ADR 0006. Require no LibraVia companion server. Generic OPDS access does not imply annotation sync. BookLore and Storyteller native support remain investigation outcomes.
 - Treat visual and interaction improvements as ongoing work in every release, even without a dedicated design milestone. Track concrete UI reports as issues, include proportional accessibility and platform acceptance, and preserve previously accepted reading behavior. Milestone 0.8 completes broader platform acceptance; it does not defer earlier polish.
 - Use native, accessible Apple controls. Keep reading content unobscured, preserve locations during layout changes, and tailor compact/wide and touch/keyboard/pointer interactions.
 - Prefer existing dependencies and Apple frameworks. Discuss new dependencies, significant format expansion, or architecture changes before implementing them; record accepted decisions in an ADR.
@@ -37,6 +51,8 @@ Version 0.2.0 is integrated on alpha; begin with [HANDOFF.md](docs/HANDOFF.md), 
 ## Validation and completion
 
 Run checks proportionate to the changed behavior; see `README.md` and `docs/DEVELOPMENT.md`. Documentation and board changes do not need app builds. Do not run hosted release gates, upload builds, or change versions simply to complete a routine patch.
+
+For routine iPhone Simulator work, reuse the existing simulator named `LibraVia` instead of creating additional simulators. Physical iPhone/iPad and other platform acceptance remain separate.
 
 Keep automated tests, compilation, simulator UI, native Mac interaction, physical iPhone/iPad use, live-server interoperability, signing, and distribution as separate evidence. Never substitute one for another.
 

@@ -4,6 +4,8 @@ LibraVia will be a beautiful native reading hub for iPhone, iPad, and Mac on App
 
 ## Current checkpoint
 
+Version 0.3.0 delivers the audited private-recovery source and reader-position hardening. Version 0.2.5 was promoted unchanged to main first. The owner authorized completing delivered-source milestones while retaining physical/platform, accessibility/performance, live Jellyfin/iCloud and distribution checks as follow-up acceptance. See [0.3.0 scope](releases/0.3.0.md) and [the implementation audit](RELEASE_IMPLEMENTATION_AUDIT.md). This is not evidence that unrun checks passed. The owner handles TestFlight after GitHub publication.
+
 The owner authorized 0.2.5 as an alpha prerelease on 2026-11-03, separating the delivered reader/native UI and early local tools from the unfinished 0.3 reliability and iCloud outcomes. See [0.2.5 scope](releases/0.2.5.md). This prerelease does not close gate #28 or #29. Build 55's 0.2.0 alpha source was promoted to beta through PR #63; beta, preview and main receive no new promotion with 0.2.5.
 
 ## Product promises

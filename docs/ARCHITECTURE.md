@@ -14,7 +14,7 @@ The current development candidate is a shared native SwiftUI app with a Jellyfin
 
 `AppModel` coordinates a single active Jellyfin account, book preparation, cache snapshots, local reading records, and coalesced progress writes. `ReadingStore` persists positions, bookmarks and annotations in account-scoped application support. Reader preferences are currently device-local. `BookCache` is an evictable, account-scoped 1 GB cache. Explicitly saved books and imported books use separate durable storage, and the account-scoped download queue survives restart.
 
-EPUB stores an exact local CFI plus fraction. Jellyfin progress uses the adapter's numeric units, which do not preserve the exact CFI. PDF/comic records use page positions. The controller/renderer bridge handles commands, readiness, search, and location updates. Local annotations exist in the development candidate; iCloud transfer and annotation sync are not yet established.
+EPUB stores an exact local CFI plus fraction. Jellyfin progress uses the adapter's numeric units, which do not preserve the exact CFI. PDF/comic records use page positions. The controller/renderer bridge handles commands, readiness, search, and location updates. Experimental private iCloud transport is connected for standalone originals and reading data, with separate Jellyfin reading-data recovery. Live recovery acceptance remains pending; see [the implementation audit](RELEASE_IMPLEMENTATION_AUDIT.md).
 
 ## Target boundaries
 
@@ -28,7 +28,7 @@ Expose catalog, acquisition, progress, bookmark, and annotation capabilities ind
 
 Keep validated content, essential metadata/cover, and reading data independently recoverable. Durable offline saves live outside disposable cache and remain until deliberate removal. Temporary/partial downloads cannot appear complete. Source/account checks apply before publishing any asynchronous result into the current session.
 
-Local import uses security-scoped access to copy/validate a file into managed storage. The planned user-selected home folder remains user-owned and must never be modified or deleted by device-copy management or Jellyfin sign-out. Server deletion is not part of device storage management. Bookmarks, positions, and annotations survive device-copy removal. See ADR 0006 for sign-out and iCloud requirements.
+Local import uses security-scoped access to copy/validate a file into managed storage. The implemented user-selected home folder remains user-owned and must never be modified or deleted by device-copy management or Jellyfin sign-out. Server deletion is not part of device storage management. Bookmarks, positions, and annotations survive device-copy removal. See ADR 0006 for sign-out and iCloud requirements.
 
 Annotations need stable IDs, source/account/book identity, format-specific anchors, selected text/context when available, note/color, modification state, and deletion records. EPUB anchors must survive reflow; PDF selections are page-based; comics and scanned PDFs use page notes. Changed editions or invalid anchors remain visible for recovery rather than attaching automatically to the wrong passage.
 
@@ -36,7 +36,7 @@ Annotations need stable IDs, source/account/book identity, format-specific ancho
 
 Persist reading changes locally first, then queue supported writes. Each adapter owns conversion between local and server locations. Generic OPDS is catalog/acquisition access unless a verified extension supplies more. Exact CFI, percentages, page indices, and another reader's location string are not interchangeable.
 
-Persist retry/acknowledgement state. Preserve conflicting note edits for resolution. Deletion records must prevent resurrection after delayed retries or another device reconnects. Authentication failure, unavailable items, disconnected servers, and unsupported operations have distinct states and actionable recovery. Private iCloud is the planned fallback for reading data that a source cannot sync, and for standalone book files. This is not yet implemented or accepted; see ADR 0006.
+Persist retry/acknowledgement state. Preserve conflicting note edits for resolution. Deletion records must prevent resurrection after delayed retries or another device reconnects. Authentication failure, unavailable items, disconnected servers, and unsupported operations have distinct states and actionable recovery. Private iCloud transport implements recovery for reading data Jellyfin cannot sync and standalone book files. It uses durable outboxes, conditional revisions, account/source/edition guards and explicit conflict review; Production/two-device/reinstall acceptance remains pending. See ADR 0006 and the implementation audit.
 
 ## Reader location contract
 

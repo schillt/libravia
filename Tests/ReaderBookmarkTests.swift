@@ -2,6 +2,51 @@ import XCTest
 @testable import BookCore
 
 final class ReaderBookmarkTests: XCTestCase {
+    func testBookmarkEditionChecksPreserveLegacyAndRejectInvalidLocations() throws {
+        let position = ReadingPosition(fraction: 0.4, cfi: "epubcfi(/6/2!/4/2:0)")
+        let known = Bookmark(name: "Original passage", position: position, contentFingerprint: "original")
+        XCTAssertEqual(known.availablePosition(fingerprint: "original", format: .epub, pageCount: 0), position)
+        XCTAssertNil(known.availablePosition(fingerprint: "changed", format: .epub, pageCount: 0))
+        XCTAssertNil(known.availablePosition(fingerprint: nil, format: .epub, pageCount: 0))
+        let payload = try JSONDecoder().decode(CloudReadingPayload.self, from: JSONEncoder().encode(CloudReadingPayload.bookmark(known)))
+        if case .bookmark(let restored) = payload {
+            XCTAssertEqual(restored.contentFingerprint, "original")
+            XCTAssertNil(restored.availablePosition(fingerprint: "changed", format: .epub, pageCount: 0))
+        } else { XCTFail("The cloud payload must retain the bookmark") }
+        let legacy = try JSONDecoder().decode(Bookmark.self, from: Data("{\"id\":\"\(known.id)\",\"name\":\"Legacy\",\"position\":{\"fraction\":0.4,\"page\":0}}".utf8))
+        XCTAssertEqual(legacy.id, known.id)
+        XCTAssertNil(legacy.contentFingerprint)
+        XCTAssertTrue(legacy.hasValidLocation(format: .epub, pageCount: 0))
+        XCTAssertNil(legacy.availablePosition(fingerprint: "original", format: .epub, pageCount: 0))
+        for format in [BookFormat.pdf, .cbz] {
+            let page = Bookmark(name: "Page", position: .init(page: 2), contentFingerprint: "original")
+            XCTAssertNotNil(page.availablePosition(fingerprint: "original", format: format, pageCount: 3))
+            XCTAssertNil(page.availablePosition(fingerprint: "original", format: format, pageCount: 2))
+            XCTAssertNil(page.availablePosition(fingerprint: "changed", format: format, pageCount: 3))
+        }
+        XCTAssertFalse(Bookmark(name: "Invalid", position: .init(page: -1)).hasValidLocation(format: .pdf, pageCount: 4))
+        XCTAssertFalse(Bookmark(name: "Invalid", position: .init(fraction: .nan)).hasValidLocation(format: .epub, pageCount: 0))
+        XCTAssertFalse(Bookmark(name: "Invalid", position: .init(cfi: "broken")).hasValidLocation(format: .epub, pageCount: 0))
+    }
+
+    @MainActor func testBookmarkEditsAndRelaunchRetainSeparateEditionProvenance() throws {
+        let namespace = "bookmark-editions-\(UUID())"
+        let store = try ReadingStore(namespace: namespace)
+        defer { try? store.delete() }
+        let old = Bookmark(name: "Legacy", position: .init(page: 1))
+        let first = Bookmark(name: "First edition", position: old.position, contentFingerprint: "first")
+        let second = Bookmark(name: "Second edition", position: old.position, contentFingerprint: "second")
+        for bookmark in [old, first, second] { XCTAssertTrue(try store.addIfAbsent(bookmark, id: "book", format: .pdf)) }
+        XCTAssertFalse(try store.addIfAbsent(first, id: "book", format: .pdf))
+        try store.renameBookmark(first, id: "book", name: "Renamed")
+        let restored = try ReadingStore(namespace: namespace)
+        let bookmarks = try XCTUnwrap(restored.bookmarks["book"])
+        XCTAssertEqual(bookmarks.map(\.id), [old.id, first.id, second.id])
+        XCTAssertEqual(bookmarks.map(\.contentFingerprint), [nil, "first", "second"])
+        XCTAssertEqual(bookmarks[1].name, "Renamed")
+        XCTAssertNil(bookmarks[1].availablePosition(fingerprint: "second", format: .pdf, pageCount: 3))
+    }
+
     @MainActor func testOriginalFormattingIsPerBookAndNamespaceAndPersists() throws {
         let first = "formatting-\(UUID())", second = "formatting-\(UUID())"
         let store = try ReadingStore(namespace: first), other = try ReadingStore(namespace: second)
@@ -173,6 +218,43 @@ final class ReaderBookmarkTests: XCTestCase {
         XCTAssertEqual(markdown.components(separatedBy: "Invalid page index: \(Int.max)").count, 3)
         XCTAssertTrue(markdown.contains("Keep this"))
         XCTAssertTrue(markdown.contains("Keep bookmark"))
+    }
+
+    func testExportsIncludeUnicodeMetadataForEverySupportedFormat() throws {
+        for format in [BookFormat.epub, .pdf, .cbz] {
+            let note = ReadingAnnotation(anchor: .page(0), selectedText: nil, context: nil, note: "覚え書き 📖", color: nil)
+            for source in [AnnotationExportSource.onMyDevice, .jellyfin] {
+                let data = try AnnotationExport.json(title: "図書 – Café", author: "Zoë 李", source: source, format: format, annotations: [note], bookmarks: [])
+                let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                XCTAssertEqual(object["version"] as? Int, 2)
+                XCTAssertEqual(object["author"] as? String, "Zoë 李")
+                XCTAssertEqual(object["sourceLabel"] as? String, source.rawValue)
+                XCTAssertEqual(object["format"] as? String, format.rawValue)
+                let markdown = String(decoding: AnnotationExport.markdown(title: "図書 – Café", author: "Zoë 李", source: source, format: format, annotations: [note], bookmarks: []), as: UTF8.self)
+                for text in ["図書 – Café", "Zoë 李", "Source: \(source.rawValue)", "Format: \(format.rawValue.uppercased())", "覚え書き 📖"] {
+                    XCTAssertTrue(markdown.contains(text))
+                }
+            }
+        }
+        let empty = String(decoding: AnnotationExport.markdown(title: "", author: " \n", format: .pdf, annotations: [], bookmarks: []), as: UTF8.self)
+        XCTAssertTrue(empty.contains("Unknown author"))
+    }
+
+    @MainActor func testReaderExportDoesNotIncludeConnectionOrAccountMetadata() throws {
+        let model = AppModel(restoreLogin: false)
+        let reading = try ReadingStore(namespace: "export-privacy-\(UUID())")
+        defer { try? reading.delete() }
+        model.store = reading
+        model.account = Account(server: URL(string: "https://private.example/secret-library")!, userID: "private-user", serverID: "private-server", username: "private-login", token: "private-token")
+        let book = Book(id: "private-book-id", title: "Public title", author: "Author", summary: "private-summary", format: .pdf, isFolder: false, imageTag: nil, ticks: 0, libraryID: "private-library", libraryName: "private-library-name")
+        for asJSON in [true, false] {
+            let text = String(decoding: try model.exportReadingData(for: book, asJSON: asJSON), as: UTF8.self)
+            XCTAssertTrue(text.contains("Jellyfin"))
+            XCTAssertTrue(text.contains("Author"))
+            for value in ["private.example", "secret-library", "private-user", "private-server", "private-login", "private-token", "private-book-id", "private-summary", "private-library"] {
+                XCTAssertFalse(text.contains(value), value)
+            }
+        }
     }
 
     func testPDFHighlightRequiresMatchingFingerprintValidPageAndRectangles() {

@@ -20,6 +20,7 @@ enum AnnotationAnchor: Equatable { case pdf(page: Int, selections: [PDFAnnotatio
 struct ReadingAnnotation: Equatable {
     var anchor: AnnotationAnchor
     var contentFingerprint: String?
+    var color: String? = nil
     func availablePage(fingerprint: String?, pageCount: Int) -> Int? {
         guard let fingerprint, fingerprint == contentFingerprint else { return nil }
         let page: Int
@@ -168,6 +169,30 @@ enum SearchState { case idle, failed }
         cancelled.cancel()
         let discarded = await cancelled.value
         precondition(discarded == nil, "Cancelled decode cannot publish an image")
+        // Host the actual SwiftUI surface and drive its production command path.
+        // Starting a new decode must immediately retire the old page's readiness.
+        let comicController = ReaderController()
+        let missingPage = rasterURL.appendingPathExtension("missing")
+        let comic = ComicSurface(prepared: PreparedBook(document: rasterURL, images: [rasterURL, rasterURL, missingPage], position: ReadingPosition()), controller: comicController)
+        let host = NSHostingView(rootView: comic)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        for _ in 0..<100 where !comicController.ready { try? await Task.sleep(for: .milliseconds(20)) }
+        precondition(comicController.ready && comicController.command != nil, "Hosted comic must finish initial decoding")
+        comicController.command?("next", nil)
+        precondition(!comicController.ready, "Old page cannot remain ready during the next decode")
+        precondition(comicController.position.page == 0, "Pending decode must retain the last readable position")
+        for _ in 0..<100 where !comicController.ready { try? await Task.sleep(for: .milliseconds(20)) }
+        precondition(comicController.ready && comicController.position.page == 1, "Only the successfully decoded page publishes its location")
+        comicController.command?("next", nil)
+        for _ in 0..<100 where comicController.error == nil { try? await Task.sleep(for: .milliseconds(20)) }
+        precondition(!comicController.ready && comicController.error != nil, "Unreadable page must stay unavailable for annotation")
+        precondition(comicController.position.page == 1, "Failed decoding cannot replace the saved readable page")
+        comicController.command?("previous", nil)
+        for _ in 0..<100 where !comicController.ready { try? await Task.sleep(for: .milliseconds(20)) }
+        precondition(comicController.ready && comicController.error == nil && comicController.position.page == 1, "Returning from a damaged page restores normal reading")
         print("PASS: PDF page/resize/selection/boundaries/stale-search and comic gesture/restore/decode cancellation regressions")
     }
 }

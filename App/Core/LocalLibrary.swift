@@ -22,6 +22,19 @@ struct LocalBookEntry: Codable, Identifiable, Sendable {
     }
 }
 
+/// Issued only after a retained standalone original has been checked against
+/// the catalog edition and its explicit cloud identity.
+struct VerifiedStandaloneEdition: Sendable {
+    let localBookID: String
+    let cloudBookID: CloudStandaloneBookID
+    let scope: CloudReadingScope
+    let fingerprint: String
+
+    fileprivate init(localBookID: String, cloudBookID: CloudStandaloneBookID, scope: CloudReadingScope, fingerprint: String) {
+        self.localBookID = localBookID; self.cloudBookID = cloudBookID; self.scope = scope; self.fingerprint = fingerprint
+    }
+}
+
 /// A folder entry represents a user's source file, never ownership of that file.
 struct FolderBookEntry: Codable, Identifiable, Sendable {
     let id: String
@@ -214,6 +227,30 @@ actor LocalLibrary {
     /// Copy while the provider's security scope is active. The chosen file is never moved or removed.
     func importFile(_ source: URL, folderBookID: String? = nil, expectedDigest: String? = nil) async throws -> LocalBookEntry {
         let format = BookFormat(path: source.lastPathComponent)
+        return try await importFile(source, format: format, explicitBookID: folderBookID,
+                                    expectedDigest: expectedDigest, folderSource: folderBookID != nil, title: nil, restoring: nil)
+    }
+
+    /// Install a verified staged cloud asset as an app-owned copy. A separate
+    /// cloud identity gets its own local item even when bytes match another book.
+    func restoreCloudBook(_ staged: StagedCloudBook, scope: CloudReadingScope) async throws -> LocalBookEntry {
+        try staged.metadata.validate(scope: scope)
+        try await CloudBookIntegrity.verify(staged)
+        let identity = staged.metadata.bookID
+        let matches = entries.filter { $0.cloudIdentities?[scope.cloudAccountKey] == identity }
+        guard matches.count <= 1 else { throw ReaderError.message("The cloud book identity is duplicated. Recovery is required.") }
+        let localID = matches.first?.id ?? identity.readingBookID
+        guard !matches.isEmpty || !entries.contains(where: { $0.id == localID }) else {
+            throw ReaderError.message("The cloud book identity conflicts with a local book. Recovery is required.")
+        }
+        let entry = try await importFile(staged.assetURL, format: staged.metadata.format, explicitBookID: localID,
+                                         expectedDigest: staged.metadata.sha256, folderSource: false, title: staged.metadata.title,
+                                         restoring: (scope, staged.metadata))
+        return entry
+    }
+
+    private func importFile(_ source: URL, format: BookFormat, explicitBookID: String?, expectedDigest: String?,
+                            folderSource: Bool, title: String?, restoring: (CloudReadingScope, CloudBookMetadata)?) async throws -> LocalBookEntry {
         guard format != .unsupported else { throw ReaderError.message("Choose an EPUB, PDF, or CBZ book.") }
         let access = source.startAccessingSecurityScopedResource()
         defer { if access { source.stopAccessingSecurityScopedResource() } }
@@ -249,24 +286,50 @@ actor LocalLibrary {
         if let expectedDigest, digest != expectedDigest {
             throw ReaderError.message("This source file has changed. The earlier device copy and its reading data are still available; import the new edition separately.")
         }
-        let id = folderBookID ?? "local-\(format.rawValue)-\(digest)"
+        let id = explicitBookID ?? "local-\(format.rawValue)-\(digest)"
         let existing = entries.first(where: { $0.id == id })
         if let existing {
-            guard folderBookID == nil || existing.contentDigest == digest else {
+            guard existing.format == format, explicitBookID == nil || knownDigest(existing) == digest else {
                 throw ReaderError.message("This source file has changed. The earlier device copy and its reading data are still available; import the new edition separately.")
+            }
+            if let (scope, metadata) = restoring {
+                guard existing.cloudIdentities?[scope.cloudAccountKey] == metadata.bookID else {
+                    throw ReaderError.message("The restored book identity conflicts with a local book.")
+                }
             }
             if await content.saved(existing.book) != nil {
                 try await content.restoreOriginal(temporary, book: existing.book, expectedDigest: digest)
+                if let (_, metadata) = restoring {
+                    guard let saved = await content.originalFile(for: existing.book) else { throw ReaderError.message("The restored book is unavailable.") }
+                    try await CloudBookIntegrity.verify(StagedCloudBook(metadata: metadata, assetURL: saved))
+                }
                 return existing
             }
         }
-        let name = source.deletingPathExtension().lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = (title ?? source.deletingPathExtension().lastPathComponent).trimmingCharacters(in: .whitespacesAndNewlines)
         var entry = LocalBookEntry(id: id, title: name.isEmpty ? "Untitled Book" : name, format: format)
-        if folderBookID != nil { entry.contentDigest = digest; entry.folderSource = true }
+        if explicitBookID != nil {
+            entry.contentDigest = digest
+            entry.folderSource = restoring == nil ? folderSource : (existing?.folderSource ?? false)
+        }
         entry.cloudIdentities = existing?.cloudIdentities
+        if let (scope, metadata) = restoring {
+            if entry.cloudIdentities == nil { entry.cloudIdentities = [:] }
+            entry.cloudIdentities?[scope.cloudAccountKey] = metadata.bookID
+        }
         let directory = try await content.install(temporary, book: entry.book, retainOriginal: true, archiveScript: archiveScript)
+        if let (_, metadata) = restoring {
+            guard let saved = await content.originalFile(for: entry.book) else { throw ReaderError.message("The restored book is unavailable.") }
+            try await CloudBookIntegrity.verify(StagedCloudBook(metadata: metadata, assetURL: saved))
+        }
         try Task.checkCancellation()
         entry = enrich(entry, directory: directory)
+        if let (scope, metadata) = restoring {
+            guard !entries.contains(where: { $0.id != id && $0.cloudIdentities?[scope.cloudAccountKey] == metadata.bookID }),
+                  entries.first(where: { $0.id == id }).map({ $0.cloudIdentities?[scope.cloudAccountKey] == metadata.bookID && knownDigest($0) == digest }) ?? true else {
+                throw ReaderError.message("The local library changed during restore. Reopen it and try again.")
+            }
+        }
         let previous = entries
         entries.removeAll { $0.id == id }
         entries.append(entry)
@@ -290,6 +353,51 @@ actor LocalLibrary {
         await content.originalFile(for: entry.book)
     }
 
+    /// Hash the app-owned retained original, not just the catalog metadata.
+    /// Recheck the catalog after suspension before issuing the identity proof.
+    func verifyCloudEdition(for entry: LocalBookEntry, scope: CloudReadingScope) async throws -> VerifiedStandaloneEdition {
+        guard scope.isValid, scope.sourceKey == (try CloudReadingSource.imported.key()),
+              let current = entries.first(where: { $0.id == entry.id }),
+              let identity = current.cloudIdentities?[scope.cloudAccountKey],
+              let digest = knownDigest(current), let original = await content.originalFile(for: current.book) else {
+            throw ReaderError.message("The original book or its cloud identity is unavailable.")
+        }
+        let size = try original.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size > 0, size <= 512 * 1024 * 1024 else { throw ReaderError.message("The original book is unavailable or damaged.") }
+        let metadata = CloudBookMetadata(accountKey: scope.cloudAccountKey, sourceKey: scope.sourceKey,
+                                         bookID: identity, revision: UUID(), title: current.title,
+                                         format: current.format, byteCount: Int64(size), sha256: digest)
+        try await CloudBookIntegrity.verify(StagedCloudBook(metadata: metadata, assetURL: original))
+        guard let latest = entries.first(where: { $0.id == current.id }),
+              latest.cloudIdentities?[scope.cloudAccountKey] == identity, knownDigest(latest) == digest,
+              latest.format == current.format, await content.originalFile(for: latest.book) == original else {
+            throw ReaderError.message("The book changed during edition verification. Try again.")
+        }
+        return VerifiedStandaloneEdition(localBookID: current.id, cloudBookID: identity, scope: scope, fingerprint: digest)
+    }
+
+    /// Assign one stable, account-scoped cloud identity to this catalog item.
+    /// This does not upload content or infer that identical books are the same.
+    func ensureCloudIdentity(for entry: LocalBookEntry, scope: CloudReadingScope) throws -> CloudStandaloneBookID {
+        guard scope.isValid, scope.sourceKey == (try CloudReadingSource.imported.key()),
+              let index = entries.firstIndex(where: { $0.id == entry.id }),
+              knownDigest(entries[index]) != nil else {
+            throw ReaderError.message("The standalone book identity is unavailable.")
+        }
+        try requireCurrentCatalog()
+        if let existing = entries[index].cloudIdentities?[scope.cloudAccountKey] { return existing }
+        let identity = CloudStandaloneBookID()
+        guard !entries.contains(where: { $0.cloudIdentities?[scope.cloudAccountKey] == identity }) else {
+            throw ReaderError.message("A cloud book identity could not be assigned. Try again.")
+        }
+        let previous = entries
+        if entries[index].cloudIdentities == nil { entries[index].cloudIdentities = [:] }
+        entries[index].cloudIdentities?[scope.cloudAccountKey] = identity
+        do { try PrivateBookFiles.write(JSONEncoder().encode(entries), to: indexURL) }
+        catch { entries = previous; throw error }
+        return identity
+    }
+
     /// Adoption is explicit: content equality alone must never merge distinct books.
     /// The existing local identity and reading data are left untouched.
     func adoptCloudIdentity(_ metadata: CloudBookMetadata, for entry: LocalBookEntry,
@@ -305,6 +413,7 @@ actor LocalLibrary {
               entries[index].cloudIdentities?[scope.cloudAccountKey].map({ $0 == identity }) ?? true else {
             throw ReaderError.message("This cloud identity is already assigned to another book.")
         }
+        try requireCurrentCatalog()
         let previous = entries
         if entries[index].cloudIdentities == nil { entries[index].cloudIdentities = [:] }
         entries[index].cloudIdentities?[scope.cloudAccountKey] = identity
@@ -330,6 +439,17 @@ actor LocalLibrary {
         let digest = entry.contentDigest ?? (entry.id.hasPrefix(prefix) ? String(entry.id.dropFirst(prefix.count)) : "")
         guard digest.utf8.count == 64, digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
         return digest
+    }
+
+    private func requireCurrentCatalog() throws {
+        guard FileManager.default.fileExists(atPath: indexURL.path) else {
+            throw ReaderError.message("The standalone library changed. Reopen it before syncing.")
+        }
+        let disk = try JSONDecoder().decode([LocalBookEntry].self, from: Data(contentsOf: indexURL))
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard try encoder.encode(disk) == encoder.encode(entries) else {
+            throw ReaderError.message("The standalone library changed. Reopen it before syncing.")
+        }
     }
 
     func remove(_ entry: LocalBookEntry) async throws {

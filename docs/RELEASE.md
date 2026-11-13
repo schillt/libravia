@@ -2,7 +2,13 @@
 
 The release path is **alpha → beta → preview → main**. A milestone gate, a frozen commit, and explicit owner authorization control each promotion. Long-lived branches are not automatically synchronized and no branch name alone proves acceptance.
 
-## Current 0.2.5 alpha preparation
+## Current 0.3.0 source publication
+
+The owner explicitly authorized 0.2.5 promotion to main first, then 0.3.0 GitHub source publication, README/instruction/board reconciliation and completion of the delivered-source milestones. PRs #67–#69 promoted the exact existing 0.2.5 tree to main. This supersedes the earlier 0.2.5 instruction below to leave promotion branches unchanged.
+
+Version 0.3.0/build 59 carries the audited private-recovery and reader fixes. Publish a clean release snapshot through PRs, preserving the Codex branch locally. Preserve immutable prior tags. Source milestone completion retains unrun physical/platform/live-service/distribution criteria as separately tracked follow-up acceptance; it does not fabricate successful evidence. The owner handles TestFlight through Xcode Cloud after source publication. No local binary upload or tester activation is authorized.
+
+## Historical 0.2.5 alpha preparation
 
 The owner authorized publishing 0.2.5 as a GitHub alpha prerelease on 2026-11-03 and reconciling unfinished work into 0.3. Marketing version 0.2.5, repository build 56. Integrate the exact reviewed candidate through a PR into alpha, then tag that exact integrated tree as `v0.2.5` and publish as a prerelease. Do not advance beta, preview or main. The release carries no credential-bearing artifacts or private logs.
 

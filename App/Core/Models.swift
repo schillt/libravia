@@ -49,17 +49,36 @@ struct Book: Identifiable, Hashable, Sendable {
 }
 struct CatalogPage: Sendable { var items: [Book]; var total: Int; var nextCursor: String? = nil }
 struct ReadingPosition: Codable, Equatable, Sendable {
+    static let maximumTickPage = Int(Int64.max / 10_000)
     var fraction: Double = 0
     var page: Int = 0
     var cfi: String? = nil
     func ticks(for format: BookFormat) -> Int64 {
-        format == .epub ? Int64(min(1, max(0, fraction)) * 10_000_000) : Int64(max(0, page)) * 10_000
+        if format == .epub {
+            guard fraction.isFinite else { return 0 }
+            return Int64(min(1, max(0, fraction)) * 10_000_000)
+        }
+        return Int64(min(Self.maximumTickPage, max(0, page))) * 10_000
+    }
+    /// A safe display conversion is not permission to report corrupt data.
+    func validatedTicks(for format: BookFormat) -> Int64? {
+        guard fraction.isFinite, (0...1).contains(fraction), page >= 0,
+              page <= Self.maximumTickPage, format != .unsupported else { return nil }
+        return ticks(for: format)
     }
     static func from(ticks: Int64, format: BookFormat) -> Self {
         format == .epub ? Self(fraction: min(1, max(0, Double(ticks) / 10_000_000))) : Self(page: max(0, Int(ticks / 10_000)))
     }
 }
-struct ReadingRecord: Codable, Sendable {
+/// Reject incomplete renderer messages before they can replace a saved place.
+enum ReaderPositionValidation {
+    static func epub(cfi: String?, fraction: Double) -> ReadingPosition? {
+        guard fraction.isFinite, (0...1).contains(fraction), let cfi,
+              cfi.hasPrefix("epubcfi("), cfi.hasSuffix(")"), cfi.count <= 8192 else { return nil }
+        return ReadingPosition(fraction: fraction, cfi: cfi)
+    }
+}
+struct ReadingRecord: Codable, Equatable, Sendable {
     var position: ReadingPosition
     var acknowledgedTicks: Int64
     var dirty: Bool
@@ -67,17 +86,33 @@ struct ReadingRecord: Codable, Sendable {
     var title: String
     var format: BookFormat
     var syncBlock: ProgressSyncBlock? = nil
+    var contentFingerprint: String? = nil
     func conflicts(with remoteTicks: Int64) -> Bool {
         dirty && remoteTicks != acknowledgedTicks && remoteTicks != position.ticks(for: format)
     }
 }
 enum ProgressSyncBlock: String, Codable, Sendable {
-    case unavailable, conflict
+    case unavailable, conflict, edition
 }
 struct Bookmark: Identifiable, Codable, Sendable {
     var id = UUID()
     var name: String
     var position: ReadingPosition
+    var contentFingerprint: String? = nil
+
+    func hasValidLocation(format: BookFormat, pageCount: Int) -> Bool {
+        guard position.fraction.isFinite, (0...1).contains(position.fraction) else { return false }
+        if format == .epub {
+            guard let cfi = position.cfi else { return true } // Legacy percentage locations require explicit review.
+            return cfi.hasPrefix("epubcfi(") && cfi.hasSuffix(")") && cfi.count <= 8192
+        }
+        return (format == .pdf || format == .cbz) && position.page >= 0 && position.page < pageCount
+    }
+    func availablePosition(fingerprint: String?, format: BookFormat, pageCount: Int) -> ReadingPosition? {
+        guard let fingerprint, contentFingerprint == fingerprint,
+              hasValidLocation(format: format, pageCount: pageCount) else { return nil }
+        return position
+    }
 }
 
 /// A local anchor keeps the format-specific location and the original text for
@@ -191,22 +226,30 @@ struct ReadingAnnotation: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// Export labels describe the source without exposing endpoints or account IDs.
+enum AnnotationExportSource: String, Codable, Sendable {
+    case onMyDevice = "On My Device"
+    case jellyfin = "Jellyfin"
+}
+
 /// Export is an explicit user action and does not change local reading data.
 enum AnnotationExport {
     private struct Archive: Codable {
         let version: Int
         let title: String
+        let author: String
+        let sourceLabel: String
         let format: BookFormat
         let annotations: [ReadingAnnotation]
         let bookmarks: [Bookmark]
     }
-    static func json(title: String, format: BookFormat, annotations: [ReadingAnnotation], bookmarks: [Bookmark]) throws -> Data {
+    static func json(title: String, author: String = "", source: AnnotationExportSource = .onMyDevice, format: BookFormat, annotations: [ReadingAnnotation], bookmarks: [Bookmark]) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(Archive(version: 1, title: title, format: format, annotations: annotations, bookmarks: bookmarks))
+        return try encoder.encode(Archive(version: 2, title: title, author: author, sourceLabel: source.rawValue, format: format, annotations: annotations, bookmarks: bookmarks))
     }
-    static func markdown(title: String, format: BookFormat, annotations: [ReadingAnnotation], bookmarks: [Bookmark]) -> Data {
+    static func markdown(title: String, author: String = "", source: AnnotationExportSource = .onMyDevice, format: BookFormat, annotations: [ReadingAnnotation], bookmarks: [Bookmark]) -> Data {
         func quoted(_ value: String) -> String {
             value.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
                 .components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n")
@@ -215,7 +258,9 @@ enum AnnotationExport {
             guard index >= 0, index < Int.max else { return "Invalid page index: \(index)" }
             return "Page \(index + 1)"
         }
-        var lines = ["# Reading notes", "", quoted(title), ""]
+        var lines = ["# Reading notes", "", "Title:", "", quoted(title), "",
+                     "Author:", "", quoted(author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown author" : author), "",
+                     "Format: \(format.rawValue.uppercased())", "", "Source: \(source.rawValue)", ""]
         for annotation in annotations.sorted(by: { $0.created < $1.created }) {
             let location: String
             switch annotation.anchor {
@@ -286,7 +331,27 @@ enum ReaderPagination {
         return "\(estimated ? "About page" : "Page") \(page(at: fraction, total: total)) of \(total)"
     }
 }
-struct PreparedBook: Identifiable { var id: String { book.id }; var book: Book; var directory: URL; var document: URL; var images: [URL]; var position: ReadingPosition; var hasDurableSidecars = false }
+struct PreparedBook: Identifiable { var id: String { book.id }; var book: Book; var directory: URL; var document: URL; var images: [URL]; var position: ReadingPosition; var hasDurableSidecars = false; var contentFingerprint: String? = nil }
+struct PositionEditionReview: Identifiable {
+    let id = UUID()
+    let prepared: PreparedBook
+    let previous: ReadingRecord
+    let suggestedRecord: ReadingRecord
+    let sessionID: UUID
+    let pageCount: Int
+    let backupID = UUID()
+    var canTrySaved: Bool {
+        previous.format == prepared.book.format &&
+        previous.position.validatedTicks(for: prepared.book.format) != nil &&
+        Bookmark(name: "", position: previous.position).hasValidLocation(format: prepared.book.format, pageCount: pageCount)
+    }
+    var canUseSuggested: Bool {
+        suggestedRecord.position != previous.position &&
+        suggestedRecord.position.validatedTicks(for: prepared.book.format) != nil &&
+        Bookmark(name: "", position: suggestedRecord.position).hasValidLocation(format: prepared.book.format, pageCount: pageCount)
+    }
+    enum Choice: Equatable { case saved, suggested, beginning }
+}
 enum ReaderError: LocalizedError {
     case message(String)
     var errorDescription: String? { if case .message(let value) = self { return value }; return nil }

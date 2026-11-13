@@ -17,6 +17,8 @@ Read [HANDOFF.md](HANDOFF.md) before starting the next issue. PR #59 consolidate
 
 Create issue branches from current `alpha`: `feature/<issue>-<description>`, `fix/<issue>-<description>`, `research/<issue>-<description>`, or `docs/<issue>-<description>`. Do not pre-create a branch for every future issue. Reuse assigned worktrees and preserve unrelated changes. No force pushes or deletion of the four long-lived branches.
 
+Owner instruction: do not upload Codex local branches to GitHub. Keep that work local. For an explicitly authorized release, publish a clean release snapshot/branch and use the approved PR promotion path. Never include unrelated untracked workflow artifacts, signing settings or private logs. Merge, promotion, GitHub publication and binary distribution have separate authorization; the owner handles TestFlight for 0.3.0.
+
 All four branches require PRs and resolved review conversations; administrators are covered. `alpha` requires linear history. No required CI context is configured until a real compatible workflow exists and passes. Zero GitHub-required approvals avoids an impossible self-approval requirement for a solo owner; it does not authorize an agent to merge. Owner authorization controls merge and promotion.
 
 ## Issues and board
@@ -67,3 +69,9 @@ Next action and authorization needed:
 ```
 
 Do not publish private workstation paths or identifiers. If local uncommitted work exists, identify it by repository-relative files and describe whether it is exploratory or verified. Another agent must inspect the working tree and exact issue before continuing.
+
+CloudKit recovery development uses the `LIBRAVIA_ICLOUD_CONTAINER` build setting for both Apple platforms. Its default derives from the app bundle identifier and is provisional until the owner’s Apple Developer account confirms the intended container and App ID association. Before a signed recovery test or release, verify the provisioning profiles, container environment and schema against that same identifier; an unsigned simulator build does not establish those capabilities. Local reading remains independent of iCloud. The app includes experimental standalone recovery and a separate Jellyfin reading-data recovery action, each with optional foreground retries; their CloudKit behavior, review tools and device behavior are not yet verified for release.
+
+On an iCloud account mismatch, recovery remains linked to its original account and local reading edits continue; a synthetic test covers returning to that account and syncing those edits. Jellyfin and standalone recovery offer reviewed switches that scan the destination first, retain the previous destination archive, and preserve alternatives from both journals. Standalone switching maps explicit book identities and keeps unmatched reading changes in the earlier journal. Both flows still need live two-account and interruption acceptance; live account changes during CloudKit operations remain unverified.
+
+Jellyfin recovery now scopes the source using a hash of the same normalized endpoint, server ID and user ID as local reading storage. The earlier experimental server-ID/user-ID-only scope is deliberately not merged silently into the new scope. The reader asks for library confirmation and instructs the user to stop earlier clients, then scans and stages the earlier cloud zone before switching journals. Interrupted scans and marker switches can be retried. Changes made later by an earlier client cannot be included in the completed scan. This flow still needs live iCloud and device acceptance; a missing or reset earlier zone remains blocked for separate recovery review.

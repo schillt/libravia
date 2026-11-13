@@ -1,0 +1,30 @@
+--- production
++++ private-development
+@@ -1,4 +1,27 @@
+ DEFINE SCHEMA
++
++    RECORD TYPE ReadingDataV1 (
++        "___createTime" TIMESTAMP,
++        "___createdBy"  REFERENCE,
++        "___etag"       STRING,
++        "___modTime"    TIMESTAMP,
++        "___modifiedBy" REFERENCE,
++        "___recordID"   REFERENCE,
++        readingData     ENCRYPTED BYTES,
++        sourceKey       STRING
++    );
++
++    RECORD TYPE StandaloneBookV1 (
++        "___createTime" TIMESTAMP,
++        "___createdBy"  REFERENCE,
++        "___etag"       STRING,
++        "___modTime"    TIMESTAMP,
++        "___modifiedBy" REFERENCE,
++        "___recordID"   REFERENCE,
++        bookFile        ASSET,
++        metadata        ENCRYPTED BYTES,
++        tombstone       ENCRYPTED BYTES
++    );
+ 
+     RECORD TYPE Users (
+         "___createTime" TIMESTAMP,

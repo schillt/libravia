@@ -48,6 +48,10 @@ enum ManagedStorageUsage {
 /// Fingerprints are computed off the main actor with bounded memory. Hashing
 /// each file separately preserves page boundaries in an ordered comic.
 enum BookFingerprint {
+    static func prepared(_ book: PreparedBook) async throws -> String {
+        if book.book.format == .epub { return try await epub(directory: book.directory, hasDurableSidecars: book.hasDurableSidecars) }
+        return try await compute(files: book.book.format == .pdf ? [book.document] : book.images)
+    }
     static func compute(files: [URL]) async throws -> String {
         let task = Task.detached(priority: .utility) { try digest(files: files, root: nil) }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
@@ -104,6 +108,18 @@ enum BookFingerprint {
 
 /// Native file protection; user-created reading state remains eligible for device backup.
 enum PrivateBookFiles {
+    /// Nonblocking interprocess exclusion around read/check/write transactions.
+    /// Lock files contain no user data and must live outside replaceable data files.
+    static func withExclusiveLock<T>(at url: URL, _ body: () throws -> T) throws -> T {
+        let descriptor = open(url.path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
+        guard descriptor >= 0 else { throw ReaderError.message("The local recovery state is unavailable.") }
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            throw ReaderError.message("The local recovery state is in use. Try again.")
+        }
+        return try body()
+    }
+
     static func write(_ data: Data, to url: URL) throws {
         #if os(iOS)
         try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
@@ -126,64 +142,239 @@ enum PrivateBookFiles {
 @MainActor final class ReadingStore {
     let root: URL
     private let baseDirectory: URL
+    private let namespaceLock: URL
     private var atomicStore: CloudAtomicReadingStore?
+    private var editionVerificationGenerations: [String: UUID] = [:]
     private(set) var records: [String: ReadingRecord] = [:]
     private(set) var bookmarks: [String: [Bookmark]] = [:]
     private(set) var annotations: [String: [ReadingAnnotation]] = [:]
     private var originalFormatting: [String: Bool] = [:]
+    // Exact file snapshots let stale sessions reject writes instead of silently
+    // replacing changes committed by another session. Missing files have no entry.
+    private var legacyFiles: [String: Data] = [:]
     init(namespace: String, baseDirectory: URL? = nil) throws {
         self.baseDirectory = baseDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         root = self.baseDirectory.appendingPathComponent("JellyfinBooks/\(stableKey(namespace))")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try PrivateBookFiles.protect(root)
-        for name in ["positions.json", "bookmarks.json", "annotations.json"] {
-            let file = root.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: file.path) { try PrivateBookFiles.protect(file) }
-        }
-        let positionsFile = root.appendingPathComponent("positions.json")
-        if FileManager.default.fileExists(atPath: positionsFile.path) {
-            records = try JSONDecoder().decode([String: ReadingRecord].self, from: Data(contentsOf: positionsFile))
-        }
-        let bookmarksFile = root.appendingPathComponent("bookmarks.json")
-        if FileManager.default.fileExists(atPath: bookmarksFile.path) {
-            bookmarks = try JSONDecoder().decode([String: [Bookmark]].self, from: Data(contentsOf: bookmarksFile))
-        }
-        let annotationFile = root.appendingPathComponent("annotations.json")
-        if FileManager.default.fileExists(atPath: annotationFile.path) {
-            annotations = try JSONDecoder().decode([String: [ReadingAnnotation]].self, from: Data(contentsOf: annotationFile))
-        }
-        let formattingFile = root.appendingPathComponent("book-formatting.json")
-        if FileManager.default.fileExists(atPath: formattingFile.path) {
-            try PrivateBookFiles.protect(formattingFile)
-            originalFormatting = try JSONDecoder().decode([String: Bool].self, from: Data(contentsOf: formattingFile))
-        }
-        let marker = root.appendingPathComponent("atomic-reading-scope.json")
-        if FileManager.default.fileExists(atPath: marker.path) {
-            let scope = try JSONDecoder().decode(CloudReadingScope.self, from: Data(contentsOf: marker))
-            let atomic = try CloudAtomicReadingStore(scope: scope, legacyRecords: records, legacyBookmarks: bookmarks, legacyAnnotations: annotations, baseDirectory: self.baseDirectory, requireExisting: true)
-            records = atomic.records; bookmarks = atomic.bookmarks; annotations = atomic.annotations; atomicStore = atomic
+        namespaceLock = root.deletingLastPathComponent().appendingPathComponent("\(stableKey(namespace)).reading.lock")
+        try FileManager.default.createDirectory(at: root.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try PrivateBookFiles.protect(root)
+            for name in ["positions.json", "bookmarks.json", "annotations.json"] {
+                let file = root.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: file.path) { try PrivateBookFiles.protect(file) }
+            }
+            let positionsFile = root.appendingPathComponent("positions.json")
+            if FileManager.default.fileExists(atPath: positionsFile.path) {
+                records = try JSONDecoder().decode([String: ReadingRecord].self, from: Data(contentsOf: positionsFile))
+            }
+            let bookmarksFile = root.appendingPathComponent("bookmarks.json")
+            if FileManager.default.fileExists(atPath: bookmarksFile.path) {
+                bookmarks = try JSONDecoder().decode([String: [Bookmark]].self, from: Data(contentsOf: bookmarksFile))
+            }
+            let annotationFile = root.appendingPathComponent("annotations.json")
+            if FileManager.default.fileExists(atPath: annotationFile.path) {
+                annotations = try JSONDecoder().decode([String: [ReadingAnnotation]].self, from: Data(contentsOf: annotationFile))
+            }
+            let formattingFile = root.appendingPathComponent("book-formatting.json")
+            if FileManager.default.fileExists(atPath: formattingFile.path) {
+                try PrivateBookFiles.protect(formattingFile)
+                originalFormatting = try JSONDecoder().decode([String: Bool].self, from: Data(contentsOf: formattingFile))
+            }
+            for name in ["positions.json", "bookmarks.json", "annotations.json", "book-formatting.json"] {
+                let file = root.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: file.path) { legacyFiles[name] = try Data(contentsOf: file) }
+            }
+            let marker = root.appendingPathComponent("atomic-reading-scope.json")
+            if FileManager.default.fileExists(atPath: marker.path) {
+                let scope = try JSONDecoder().decode(CloudReadingScope.self, from: Data(contentsOf: marker))
+                let atomic = try CloudAtomicReadingStore(scope: scope, legacyRecords: records, legacyBookmarks: bookmarks, legacyAnnotations: annotations, baseDirectory: self.baseDirectory, requireExisting: true)
+                records = atomic.records; bookmarks = atomic.bookmarks; annotations = atomic.annotations; atomicStore = atomic
+            }
         }
     }
     func usesOriginalFormatting(bookID: String) -> Bool { originalFormatting[bookID] == true }
+    func belongs(to account: Account) -> Bool { root.lastPathComponent == stableKey(account.namespace) }
+    /// Recovery setup must not silently attach an existing local journal to a
+    /// different iCloud account or source. The on-disk marker also catches a
+    /// migration performed by another open session.
+    func requireRecoveryScope(_ scope: CloudReadingScope) throws {
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            guard scope.isValid else { throw ReaderError.message("The recovery account is unavailable.") }
+            let marker = root.appendingPathComponent("atomic-reading-scope.json")
+            guard FileManager.default.fileExists(atPath: marker.path) else {
+                guard atomicStore == nil else { throw ReaderError.message("Reading data changed in another session. Reopen it before recovery.") }
+                return
+            }
+            let stored = try JSONDecoder().decode(CloudReadingScope.self, from: Data(contentsOf: marker))
+            guard stored == scope else {
+                throw ReaderError.message("This device's reading recovery is linked to another iCloud account or library. Return to the original account and library to resume. Your local reading data is unchanged.")
+            }
+            guard atomicStore?.scope == stored else {
+                throw ReaderError.message("Reading data changed in another session. Reopen it before recovery.")
+            }
+        }
+    }
     func setOriginalFormatting(_ value: Bool, bookID: String) throws {
         var next = originalFormatting
         if value { next[bookID] = true } else { next.removeValue(forKey: bookID) }
-        try PrivateBookFiles.write(JSONEncoder().encode(next), to: root.appendingPathComponent("book-formatting.json"))
-        originalFormatting = next
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            try writeLegacy(JSONEncoder().encode(next), name: "book-formatting.json")
+            originalFormatting = next
+        }
     }
     /// Explicit local migration only. No iCloud operations or consent implied.
     /// A stale orphan from an interrupted migration is never adopted silently.
-    func prepareAtomicReading(scope: CloudReadingScope) throws {
-        guard atomicStore == nil else { throw ReaderError.message("This reading store has already been migrated.") }
-        guard !FileManager.default.fileExists(atPath: root.appendingPathComponent("atomic-reading-scope.json").path) else {
-            throw ReaderError.message("Reading data was migrated in another session. Reopen it first.")
+    func prepareAtomicReading(scope: CloudReadingScope, localToCloudBookIDs: [String: String]? = nil) throws {
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            guard atomicStore == nil else { throw ReaderError.message("This reading store has already been migrated.") }
+            guard !FileManager.default.fileExists(atPath: root.appendingPathComponent("atomic-reading-scope.json").path) else {
+                throw ReaderError.message("Reading data was migrated in another session. Reopen it first.")
+            }
+            // A different legacy session may have edited since this instance opened.
+            // Compare the disk snapshot while holding the same lock used by writers.
+            func read<T: Decodable>(_ type: T.Type, _ name: String, default fallback: T) throws -> T {
+                let file = root.appendingPathComponent(name)
+                guard FileManager.default.fileExists(atPath: file.path) else { return fallback }
+                return try JSONDecoder().decode(type, from: Data(contentsOf: file))
+            }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            guard try encoder.encode(read([String: ReadingRecord].self, "positions.json", default: [:])) == encoder.encode(records),
+                  try encoder.encode(read([String: [Bookmark]].self, "bookmarks.json", default: [:])) == encoder.encode(bookmarks),
+                  try encoder.encode(read([String: [ReadingAnnotation]].self, "annotations.json", default: [:])) == encoder.encode(annotations) else {
+                throw ReaderError.message("Reading data changed in another session. Reopen it before migrating.")
+            }
+            let atomic = try CloudAtomicReadingStore(scope: scope, legacyRecords: records, legacyBookmarks: bookmarks, legacyAnnotations: annotations, baseDirectory: baseDirectory, localToCloudBookIDs: localToCloudBookIDs)
+            guard try atomic.matchesLegacy(records: records, bookmarks: bookmarks, annotations: annotations) else {
+                throw ReaderError.message("An interrupted reading-data migration requires recovery.")
+            }
+            try PrivateBookFiles.write(JSONEncoder().encode(scope), to: root.appendingPathComponent("atomic-reading-scope.json"))
+            atomicStore = atomic
         }
-        let atomic = try CloudAtomicReadingStore(scope: scope, legacyRecords: records, legacyBookmarks: bookmarks, legacyAnnotations: annotations, baseDirectory: baseDirectory)
-        guard try atomic.matchesLegacy(records: records, bookmarks: bookmarks, annotations: annotations) else {
-            throw ReaderError.message("An interrupted reading-data migration requires recovery.")
+    }
+    /// Called only after the user has identified the earlier library. The old
+    /// source key did not include the server endpoint and cannot prove that
+    /// association by itself.
+    func migrateLegacyJellyfinReading(account: Account, targetScope: CloudReadingScope) throws {
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            guard root.lastPathComponent == stableKey(account.namespace), let source = atomicStore else {
+                throw ReaderError.message("The earlier recovery library is unavailable.")
+            }
+            try validateAtomicScope()
+            let snapshot = try source.legacyJellyfinMigrationSnapshot(account: account, targetScope: targetScope)
+            let plan = try snapshot.makePlan()
+            try source.installLegacyJellyfinMigration(plan, baseDirectory: baseDirectory) {
+                try PrivateBookFiles.write(JSONEncoder().encode(targetScope), to: root.appendingPathComponent("atomic-reading-scope.json"))
+            }
+            let target = try CloudAtomicReadingStore(scope: targetScope, legacyRecords: [:], legacyBookmarks: [:],
+                                                     legacyAnnotations: [:], baseDirectory: baseDirectory, requireExisting: true)
+            atomicStore = target
+            records = target.records; bookmarks = target.bookmarks; annotations = target.annotations
+            editionVerificationGenerations = [:]
         }
-        try PrivateBookFiles.write(JSONEncoder().encode(scope), to: root.appendingPathComponent("atomic-reading-scope.json"))
-        atomicStore = atomic
+    }
+    /// The caller must first obtain an explicit account-switch decision and
+    /// stop recovery work for this reading namespace.
+    func jellyfinSwitchDestination(account: Account, targetScope: CloudReadingScope) throws -> CloudAtomicReadingStore {
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            guard belongs(to: account), let source = atomicStore,
+                  source.localToCloudBookIDs == nil, targetScope.isValid,
+                  source.scope.sourceKey == (try CloudReadingSource.scopedJellyfin(account).key()),
+                  targetScope.sourceKey == source.scope.sourceKey,
+                  targetScope.cloudAccountKey != source.scope.cloudAccountKey else {
+                throw ReaderError.message("The recovery account or library changed. Review it again.")
+            }
+            try validateAtomicScope()
+            try source.requireCurrentRevision()
+            return try CloudAtomicReadingStore(scope: targetScope, legacyRecords: [:], legacyBookmarks: [:],
+                                                legacyAnnotations: [:], baseDirectory: baseDirectory)
+        }
+    }
+    func switchJellyfinRecoveryAccount(account: Account, targetScope: CloudReadingScope) throws {
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            guard belongs(to: account), let source = atomicStore,
+                  source.scope.sourceKey == (try CloudReadingSource.scopedJellyfin(account).key()),
+                  targetScope.sourceKey == source.scope.sourceKey,
+                  targetScope.cloudAccountKey != source.scope.cloudAccountKey else {
+                throw ReaderError.message("The recovery account or library changed. Review it again.")
+            }
+            try validateAtomicScope()
+            let target = try CloudAtomicReadingStore(scope: targetScope, legacyRecords: [:], legacyBookmarks: [:],
+                                                     legacyAnnotations: [:], baseDirectory: baseDirectory)
+            let switchMarker = {
+                try PrivateBookFiles.write(JSONEncoder().encode(targetScope), to: self.root.appendingPathComponent("atomic-reading-scope.json"))
+            }
+            if try !source.resumePreparedAccountSwitch(target: target, switchMarker: switchMarker) {
+                let plan = try source.jellyfinAccountSwitchPlan(account: account, targetScope: targetScope, target: target)
+                try source.installJellyfinAccountSwitch(plan, target: target, switchMarker: switchMarker)
+            }
+            atomicStore = target
+            records = target.records; bookmarks = target.bookmarks; annotations = target.annotations
+            editionVerificationGenerations = [:]
+        }
+    }
+    /// Local commit only. The caller must inspect the destination cloud and
+    /// confirm any source-only items before invoking this operation.
+    func standaloneSwitchDestination(targetScope: CloudReadingScope) throws -> CloudAtomicReadingStore {
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            try validateAtomicScope()
+            guard let source = atomicStore, source.localToCloudBookIDs != nil, targetScope.isValid,
+                  source.scope.sourceKey == (try CloudReadingSource.imported.key()),
+                  targetScope.sourceKey == source.scope.sourceKey,
+                  targetScope.cloudAccountKey != source.scope.cloudAccountKey else {
+                throw ReaderError.message("The recovery account changed. Review it again.")
+            }
+            try source.requireCurrentRevision()
+            return try openStandaloneSwitchDestination(targetScope)
+        }
+    }
+
+    private func openStandaloneSwitchDestination(_ targetScope: CloudReadingScope) throws -> CloudAtomicReadingStore {
+        let path = baseDirectory.appendingPathComponent("LibraViaAtomicReading/\(targetScope.cloudAccountKey)/\(targetScope.sourceKey)/reading-state.json")
+        let exists = FileManager.default.fileExists(atPath: path.path)
+        let target = try CloudAtomicReadingStore(scope: targetScope, legacyRecords: [:], legacyBookmarks: [:],
+                                                 legacyAnnotations: [:], baseDirectory: baseDirectory, requireExisting: exists,
+                                                 localToCloudBookIDs: exists ? nil : [:])
+        guard target.localToCloudBookIDs != nil else { throw ReaderError.message("The destination recovery data needs review.") }
+        return target
+    }
+
+    func switchStandaloneRecoveryAccount(targetScope: CloudReadingScope, catalogBindings: [String: String],
+                                         allowSourceOnlyItems: Bool = false) throws {
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            guard let source = atomicStore, source.localToCloudBookIDs != nil, targetScope.isValid,
+                  source.scope.sourceKey == (try CloudReadingSource.imported.key()),
+                  targetScope.sourceKey == source.scope.sourceKey,
+                  targetScope.cloudAccountKey != source.scope.cloudAccountKey else {
+                throw ReaderError.message("The recovery account changed. Review it again.")
+            }
+            try validateAtomicScope()
+            let target = try openStandaloneSwitchDestination(targetScope)
+            guard let existingBindings = target.localToCloudBookIDs else {
+                throw ReaderError.message("The destination recovery data needs review.")
+            }
+            let marker = {
+                try PrivateBookFiles.write(JSONEncoder().encode(targetScope), to: self.root.appendingPathComponent("atomic-reading-scope.json"))
+            }
+            let matchesPreparedBindings = catalogBindings.allSatisfy { existingBindings[$0.key] == $0.value }
+            let resumed = matchesPreparedBindings
+                ? try source.resumePreparedAccountSwitch(target: target, allowSourceOnlyItems: allowSourceOnlyItems, switchMarker: marker)
+                : false
+            if !resumed {
+                let plan = try source.standaloneAccountSwitchPlan(targetScope: targetScope, target: target, catalogBindings: catalogBindings)
+                try source.installStandaloneAccountSwitch(plan, target: target, allowSourceOnlyItems: allowSourceOnlyItems, switchMarker: marker)
+            }
+            atomicStore = target
+            records = target.records; bookmarks = target.bookmarks; annotations = target.annotations
+            editionVerificationGenerations = [:]
+        }
+    }
+    private func validateAtomicScope() throws {
+        let marker = root.appendingPathComponent("atomic-reading-scope.json")
+        guard let atomicStore, FileManager.default.fileExists(atPath: marker.path),
+              try JSONDecoder().decode(CloudReadingScope.self, from: Data(contentsOf: marker)) == atomicStore.scope else {
+            throw ReaderError.message("Reading data changed in another session. Reopen it before editing.")
+        }
     }
     private func saveAtomicIfEnabled() throws -> Bool {
         guard let atomicStore else {
@@ -192,17 +383,42 @@ enum PrivateBookFiles {
             }
             return false
         }
+        try validateAtomicScope()
         try atomicStore.replace(records: records, bookmarks: bookmarks, annotations: annotations)
         return true
     }
+    /// Caller holds namespaceLock for both the comparison and atomic write.
+    private func validateLegacyFile(_ name: String) throws {
+        let file = root.appendingPathComponent(name)
+        let current = FileManager.default.fileExists(atPath: file.path) ? try Data(contentsOf: file) : nil
+        guard current == legacyFiles[name] else {
+            throw ReaderError.message("Reading data changed in another session. Reopen it before editing.")
+        }
+    }
+    private func writeLegacy(_ data: Data, name: String) throws {
+        try validateLegacyFile(name)
+        try PrivateBookFiles.write(data, to: root.appendingPathComponent(name))
+        legacyFiles[name] = data
+    }
     private func savePositions() throws {
-        if try saveAtomicIfEnabled() { return }
-        try PrivateBookFiles.write(JSONEncoder().encode(records), to: root.appendingPathComponent("positions.json"))
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            if try saveAtomicIfEnabled() { return }
+            try writeLegacy(JSONEncoder().encode(records), name: "positions.json")
+        }
     }
     func set(_ record: ReadingRecord, id: String) throws {
         let previous = records[id]
         records[id] = record
         do { try savePositions() } catch { records[id] = previous; throw error }
+    }
+    /// Preserve the old place durably before replacing it. An interrupted
+    /// legacy two-file write can leave an extra bookmark, never a lost place.
+    func replaceReviewedPosition(_ record: ReadingRecord, id: String, expected: ReadingRecord, backupID: UUID) throws {
+        guard records[id] == expected else { throw ReaderError.message("The saved position changed. Close and reopen the book to review it again.") }
+        let backup = Bookmark(id: backupID, name: "Earlier saved place · \(expected.updated.formatted(date: .abbreviated, time: .shortened))",
+                              position: expected.position, contentFingerprint: expected.contentFingerprint)
+        _ = try addIfAbsent(backup, id: id, format: expected.format)
+        try set(record, id: id)
     }
     func movePosition(from oldID: String, to book: Book, record: ReadingRecord) throws {
         guard oldID != book.id, records[oldID] != nil else { throw ReaderError.message("The saved position is no longer available to transfer.") }
@@ -241,6 +457,7 @@ enum PrivateBookFiles {
     }
     @discardableResult func addIfAbsent(_ bookmark: Bookmark, id: String, format: BookFormat) throws -> Bool {
         let exists = bookmarks[id, default: []].contains { existing in
+            guard existing.contentFingerprint == bookmark.contentFingerprint else { return false }
             if format == .epub {
                 if let cfi = bookmark.position.cfi, let oldCFI = existing.position.cfi { return cfi == oldCFI }
                 return bookmark.position.cfi == nil && existing.position.cfi == nil && bookmark.position.fraction == existing.position.fraction
@@ -267,8 +484,10 @@ enum PrivateBookFiles {
         do { try saveBookmarks() } catch { bookmarks[id] = previous; throw error }
     }
     private func saveBookmarks() throws {
-        if try saveAtomicIfEnabled() { return }
-        try PrivateBookFiles.write(JSONEncoder().encode(bookmarks), to: root.appendingPathComponent("bookmarks.json"))
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            if try saveAtomicIfEnabled() { return }
+            try writeLegacy(JSONEncoder().encode(bookmarks), name: "bookmarks.json")
+        }
     }
     func saveAnnotation(_ annotation: ReadingAnnotation, id: String) throws {
         let previous = annotations[id]
@@ -282,18 +501,145 @@ enum PrivateBookFiles {
         do { try saveAnnotations() } catch { annotations[id] = previous; throw error }
     }
     private func saveAnnotations() throws {
-        if try saveAtomicIfEnabled() { return }
-        try PrivateBookFiles.write(JSONEncoder().encode(annotations), to: root.appendingPathComponent("annotations.json"))
-    }
-    var hasUnsyncedCloudChanges: Bool { atomicStore?.outbox.values.contains(where: { $0.entry.pending || !$0.entry.conflicts.isEmpty }) ?? false }
-    func delete(allowUnsynced: Bool = false) throws {
-        guard atomicStore != nil || !FileManager.default.fileExists(atPath: root.appendingPathComponent("atomic-reading-scope.json").path) else {
-            throw ReaderError.message("Reading data was migrated in another session. Reopen it before removing it.")
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            if try saveAtomicIfEnabled() { return }
+            try writeLegacy(JSONEncoder().encode(annotations), name: "annotations.json")
         }
-        guard allowUnsynced || !hasUnsyncedCloudChanges else { throw ReaderError.message("Reading data has unsynced changes and cannot be removed without confirmation.") }
-        if let atomicStore { try atomicStore.deleteLocal() }
-        if FileManager.default.fileExists(atPath: root.path) { try FileManager.default.removeItem(at: root) }
-        atomicStore = nil; records = [:]; bookmarks = [:]; annotations = [:]
+    }
+    var hasUnsyncedCloudChanges: Bool {
+        guard let atomicStore else { return false }
+        return atomicStore.hasUnmappedReadingData || atomicStore.outbox.values.contains(where: { $0.entry.pending || !$0.entry.conflicts.isEmpty || $0.pendingApplication == true })
+    }
+    var cloudReadingStore: CloudAtomicReadingStore? { atomicStore }
+
+    func bindStandaloneCloudIdentity(localBookID: String, cloudBookID: CloudStandaloneBookID) throws {
+        guard let atomicStore else { throw ReaderError.message("Cloud reading data is not available for this library.") }
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            try validateAtomicScope()
+            try atomicStore.bind(localBookID: localBookID, cloudBookID: cloudBookID)
+        }
+    }
+
+    func invalidateCloudVerification() {
+        editionVerificationGenerations.removeAll()
+        atomicStore?.invalidateAllEditionVerifications()
+    }
+
+    /// Suspend certification before hashing so edits made while the check is
+    /// in flight remain local but cannot be attached to a stale edition.
+    func verifyStandaloneEdition(_ entry: LocalBookEntry, library: LocalLibrary, scope: CloudReadingScope) async throws -> String {
+        guard let atomicStore else { throw ReaderError.message("Cloud reading data is not available for this library.") }
+        let generation = UUID(); editionVerificationGenerations[entry.id] = generation
+        atomicStore.invalidateEditionVerification(localBookID: entry.id)
+        let edition = try await library.verifyCloudEdition(for: entry, scope: scope)
+        guard self.atomicStore === atomicStore, editionVerificationGenerations[entry.id] == generation, !Task.isCancelled else { throw CancellationError() }
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            try validateAtomicScope()
+            try atomicStore.registerVerifiedStandaloneEdition(edition)
+        }
+        return edition.fingerprint
+    }
+
+    /// Verify the same extracted content used by the reader. The owner supplies
+    /// a session fence so a server/account or opened-book change during hashing
+    /// cannot certify a different Jellyfin book.
+    func verifyJellyfinEdition(_ prepared: PreparedBook, source: CloudReadingSource,
+                               stillCurrent: @MainActor () -> Bool) async throws -> String {
+        let id = prepared.book.id, generation = UUID()
+        editionVerificationGenerations[id] = generation
+        atomicStore?.invalidateEditionVerification(localBookID: id)
+        guard source.isJellyfin, let atomicStore, atomicStore.localToCloudBookIDs == nil,
+              atomicStore.scope.sourceKey == (try source.key()), !id.isEmpty,
+              prepared.book.format != .unsupported, stillCurrent() else {
+            throw ReaderError.message("The Jellyfin book or account is unavailable for recovery.")
+        }
+        func validateContents() throws {
+            let directory = prepared.directory.standardizedFileURL.resolvingSymlinksInPath()
+            guard directory == prepared.directory.standardizedFileURL else { throw ReaderError.message("The book content cannot be verified.") }
+            let (document, images) = try BookCache.contents(directory, format: prepared.book.format)
+            guard document.standardizedFileURL == prepared.document.standardizedFileURL,
+                  images.map(\.standardizedFileURL) == prepared.images.map(\.standardizedFileURL) else {
+                throw ReaderError.message("The book content changed during verification.")
+            }
+            for file in prepared.book.format == .cbz ? images : [document] {
+                let path = file.standardizedFileURL
+                guard path.path.hasPrefix(directory.path + "/"), path.resolvingSymlinksInPath() == path else {
+                    throw ReaderError.message("The book content cannot be verified.")
+                }
+            }
+        }
+        func fingerprint() async throws -> String {
+            if prepared.book.format == .epub {
+                return try await BookFingerprint.epub(directory: prepared.directory, hasDurableSidecars: prepared.hasDurableSidecars)
+            }
+            return try await BookFingerprint.compute(files: prepared.book.format == .pdf ? [prepared.document] : prepared.images)
+        }
+        try validateContents()
+        let digest = try await fingerprint()
+        try validateContents()
+        guard self.atomicStore === atomicStore, editionVerificationGenerations[id] == generation,
+              stillCurrent(), !Task.isCancelled else { throw CancellationError() }
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            try validateAtomicScope()
+            try atomicStore.setVerifiedEdition(localBookID: id, fingerprint: digest)
+        }
+        return digest
+    }
+
+    /// Synchronization may stage records independently, but only this entry
+    /// point refreshes the reader-visible snapshot after verified application.
+    func applyObservedCloudVersion(_ key: CloudReadingKey, book: Book, verifiedEditionFingerprint: String,
+                                   expectedRevision: UUID, confirmLegacyEdition: Bool = false,
+                                   confirmedJellyfinDeletionTicks: Int64? = nil) throws {
+        guard let atomicStore else { throw ReaderError.message("Cloud reading data is not available for this library.") }
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            try validateAtomicScope()
+            try atomicStore.applyObserved(key, book: book, verifiedEditionFingerprint: verifiedEditionFingerprint,
+                                          expectedRevision: expectedRevision, confirmLegacyEdition: confirmLegacyEdition,
+                                          confirmedJellyfinDeletionTicks: confirmedJellyfinDeletionTicks)
+            records = atomicStore.records; bookmarks = atomicStore.bookmarks; annotations = atomicStore.annotations
+        }
+    }
+
+    func certifyReviewedLocalVersion(_ key: CloudReadingKey, book: Book, expectedRevision: UUID,
+                                     verifiedEditionFingerprint: String) throws {
+        guard let atomicStore else { throw ReaderError.message("Cloud reading data is not available for this library.") }
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            try validateAtomicScope()
+            try atomicStore.certifyReviewedLocalVersion(key, book: book, expectedRevision: expectedRevision,
+                                                        verifiedEditionFingerprint: verifiedEditionFingerprint)
+        }
+    }
+
+    func resolveCloudConflict(_ key: CloudReadingKey, book: Book, verifiedEditionFingerprint: String,
+                              expectedLocalRevision: UUID, remoteRevision: UUID,
+                              choice: CloudAtomicReadingStore.ConflictChoice, confirmUnverifiedEdition: Bool = false,
+                              confirmedJellyfinDeletionTicks: Int64? = nil) throws {
+        guard let atomicStore else { throw ReaderError.message("Cloud reading data is not available for this library.") }
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            try validateAtomicScope()
+            try atomicStore.resolveConflict(key, book: book, verifiedEditionFingerprint: verifiedEditionFingerprint,
+                                            expectedLocalRevision: expectedLocalRevision, remoteRevision: remoteRevision, choice: choice,
+                                            confirmUnverifiedEdition: confirmUnverifiedEdition,
+                                            confirmedJellyfinDeletionTicks: confirmedJellyfinDeletionTicks)
+            records = atomicStore.records; bookmarks = atomicStore.bookmarks; annotations = atomicStore.annotations
+        }
+    }
+    func delete(allowUnsynced: Bool = false) throws {
+        try PrivateBookFiles.withExclusiveLock(at: namespaceLock) {
+            if atomicStore != nil { try validateAtomicScope() }
+            guard atomicStore != nil || !FileManager.default.fileExists(atPath: root.appendingPathComponent("atomic-reading-scope.json").path) else {
+                throw ReaderError.message("Reading data was migrated in another session. Reopen it before removing it.")
+            }
+            for name in ["positions.json", "bookmarks.json", "annotations.json", "book-formatting.json"] {
+                try validateLegacyFile(name)
+            }
+            guard allowUnsynced || !hasUnsyncedCloudChanges else { throw ReaderError.message("Reading data has unsynced changes and cannot be removed without confirmation.") }
+            if let atomicStore { try atomicStore.deleteLocal() }
+            if FileManager.default.fileExists(atPath: root.path) { try FileManager.default.removeItem(at: root) }
+            atomicStore = nil; editionVerificationGenerations = [:]; records = [:]; bookmarks = [:]; annotations = [:]
+            originalFormatting = [:]; legacyFiles = [:]
+        }
     }
 }
 

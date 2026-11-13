@@ -66,6 +66,9 @@ struct EPUBSurface: EPUBViewRepresentable {
         #endif
         #if os(iOS)
         web.scrollView.contentInsetAdjustmentBehavior = .never
+        // A status-bar tap must not move a reader to the beginning of a book.
+        // Users navigate deliberately through page turns, scrolling, or contents.
+        web.scrollView.scrollsToTop = false
         web.scrollView.bounces = false
         let tap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.readerTap(_:)))
         tap.cancelsTouchesInView = false
@@ -475,6 +478,7 @@ struct EPUBSurface: EPUBViewRepresentable {
                     // reader. UIKit's default automatic inset adds safe-area bands
                     // here even though the trusted shell already reserves them.
                     renderer.scrollView.contentInsetAdjustmentBehavior = .never
+                    renderer.scrollView.scrollsToTop = false
                     renderer.scrollView.isScrollEnabled = false
                     renderer.scrollView.bounces = false
                     renderer.isUserInteractionEnabled = false; renderer.accessibilityElementsHidden = true
@@ -1026,7 +1030,11 @@ struct EPUBSurface: EPUBViewRepresentable {
                 loaded = true
                 let relative = String(prepared.document.path.dropFirst(prepared.directory.path.count + 1))
                 var components = URLComponents(); components.scheme = "appbook"; components.host = "local"; components.path = "/publication/" + relative
-                send("open", ["url": components.url!.absoluteString, "title": prepared.book.title, "cfi": prepared.position.cfi as Any? ?? NSNull(), "fraction": prepared.position.fraction, "preferences": preferencesObject(), "nativeGestures": nativeGestures, "nativeReflowBridge": !nativeGestures])
+                // The shell may boot again during the same reading session.
+                // Restore the most recently reported position, not the one
+                // captured when the book was first opened.
+                let position = controller.position
+                send("open", ["url": components.url!.absoluteString, "title": prepared.book.title, "cfi": position.cfi as Any? ?? NSNull(), "fraction": position.fraction, "preferences": preferencesObject(), "nativeGestures": nativeGestures, "nativeReflowBridge": !nativeGestures])
             #if os(macOS)
             case "reflowBegin":
                 if let request = value["request"] as? String { reflowBridge?.begin(request: request) }
@@ -1121,19 +1129,20 @@ struct EPUBSurface: EPUBViewRepresentable {
                 macTurn?.image?.removeFromSuperview(); macTurn?.image = nil; macTurn = nil; drainMacCommands()
             #endif
             case "position":
-                guard let fraction = value["fraction"] as? Double, fraction.isFinite else { return }
+                guard let fraction = value["fraction"] as? Double,
+                      let position = ReaderPositionValidation.epub(cfi: value["cfi"] as? String, fraction: fraction) else { return }
                 #if os(macOS)
-                if controller.position.cfi != value["cfi"] as? String { reflowBridge?.invalidate() }
+                if controller.position.cfi != position.cfi { reflowBridge?.invalidate() }
                 if controller.ready { reflowBridge?.prepare() }
                 #endif
-                if controller.position.cfi != value["cfi"] as? String { controller.epubSelection = nil }
+                if controller.position.cfi != position.cfi { controller.epubSelection = nil }
                 controller.currentChapter = value["href"] as? String
                 controller.chapterTitle = value["chapterTitle"] as? String ?? ""
                 controller.chapterPage = value["chapterPage"] as? Int ?? 0
                 controller.chapterPageCount = value["chapterPageCount"] as? Int ?? 0
                 controller.bookPage = value["bookPage"] as? Int ?? 0
                 controller.bookPageCount = value["bookPageCount"] as? Int ?? 0
-                controller.update(ReadingPosition(fraction: min(1, max(0, fraction)), cfi: value["cfi"] as? String))
+                controller.update(position)
                 #if os(iOS)
                 cacheCurrentPage()
                 #endif

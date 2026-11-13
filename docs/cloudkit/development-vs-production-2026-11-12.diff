@@ -1,0 +1,36 @@
+--- production
++++ development
+@@ -1,4 +1,33 @@
+ DEFINE SCHEMA
++
++    RECORD TYPE ReadingDataV1 (
++        "___createTime" TIMESTAMP,
++        "___createdBy"  REFERENCE,
++        "___etag"       STRING,
++        "___modTime"    TIMESTAMP,
++        "___modifiedBy" REFERENCE,
++        "___recordID"   REFERENCE,
++        readingData     ENCRYPTED BYTES,
++        sourceKey       STRING,
++        GRANT WRITE TO "_creator",
++        GRANT CREATE TO "_icloud",
++        GRANT READ TO "_world"
++    );
++
++    RECORD TYPE StandaloneBookV1 (
++        "___createTime" TIMESTAMP,
++        "___createdBy"  REFERENCE,
++        "___etag"       STRING,
++        "___modTime"    TIMESTAMP,
++        "___modifiedBy" REFERENCE,
++        "___recordID"   REFERENCE,
++        bookFile        ASSET,
++        metadata        ENCRYPTED BYTES,
++        tombstone       ENCRYPTED BYTES,
++        GRANT WRITE TO "_creator",
++        GRANT CREATE TO "_icloud",
++        GRANT READ TO "_world"
++    );
+ 
+     RECORD TYPE Users (
+         "___createTime" TIMESTAMP,

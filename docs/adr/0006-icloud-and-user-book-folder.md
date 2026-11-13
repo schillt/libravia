@@ -1,6 +1,6 @@
 # ADR 0006: iCloud reading data and user-selected book folder
 
-Status: Accepted product direction, implementation and acceptance pending. Date: 2026-10-31. This supersedes the iCloud and imported-data exclusions in ADR 0004 and the local-only imported-data statement in ADR 0002.
+Status: Accepted product direction; local implementation audited, live/platform acceptance pending. See [implementation evidence](../RELEASE_IMPLEMENTATION_AUDIT.md). Date: 2026-10-31. This supersedes the iCloud and imported-data exclusions in ADR 0004 and the local-only imported-data statement in ADR 0002.
 
 ## Decision
 

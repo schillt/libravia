@@ -31,6 +31,7 @@ struct ComicSurface: View {
         .task(id: ComicPageRequest(page: page, images: prepared.images)) {
             let request = UUID()
             decodeRequest = request
+            controller.ready = false
             image = nil
             controller.error = nil
             guard prepared.images.indices.contains(page) else {
@@ -80,6 +81,9 @@ struct ComicSurface: View {
     }
     private func setPage(_ index: Int) {
         guard prepared.images.indices.contains(index), index != page else { return }
+        // The old position remains durable until the new image is readable.
+        // Stop location-dependent actions during that interval.
+        controller.ready = false
         decodeRequest = UUID()
         page = index; image = nil; zoom = 1
     }

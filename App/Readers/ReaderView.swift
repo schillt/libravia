@@ -79,6 +79,8 @@ struct ReaderChapter: Identifiable {
 struct ReaderView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("automaticJellyfinRecovery") private var automaticJellyfinRecovery = false
     #if os(macOS)
     @Environment(\.closeReaderWindow) private var closeReaderWindow
     #endif
@@ -86,6 +88,7 @@ struct ReaderView: View {
     private let onContentReady: (Bool) -> Void
     @State private var controller: ReaderController
     @State private var originalFormatting = false
+    @State private var showingJellyfinRecovery = false
     @State private var panel: ReaderPanel?
     @State private var adjustment: ReaderAdjustment?
     @State private var appearanceDetent: PresentationDetent = .medium
@@ -107,11 +110,14 @@ struct ReaderView: View {
     @State private var navigationTab = 0
     @State private var bookmarkFeedback = ""
     @State private var editingBookmark: Bookmark?
+    @State private var reviewingBookmark: Bookmark?
+    @State private var reviewingBookmarkSourceKey: String?
     @State private var bookmarkName = ""
     @State private var editingNote: ReadingAnnotation?
     @State private var newHighlightNote: ReadingAnnotation?
     @State private var noteToDelete: ReadingAnnotation?
     @State private var annotationSearch = ""
+    @State private var bookmarkSearch = ""
     #if os(macOS)
     @State private var lastHighlighterColor = "yellow"
     @State private var showingHighlighterPalette = false
@@ -367,6 +373,10 @@ struct ReaderView: View {
                   macSidebarToggle("Appearance", systemImage: "textformat.size", target: .appearance)
                   macSidebarToggle("Highlights", systemImage: "note.text", target: .contents, navigation: 2)
                   macSidebarToggle("Contents", systemImage: "list.bullet", target: .contents)
+                  if model.canRecoverOpenJellyfinBook {
+                      Button("Private Reading Recovery", systemImage: "icloud") { showingJellyfinRecovery = true }
+                          .disabled(model.jellyfinRecoveryRunning || !controller.ready)
+                  }
                   if ReaderCapabilities(format: prepared.book.format).textSearch {
                       macSidebarToggle("Search book", systemImage: "magnifyingglass", target: .search)
                           .disabled(!controller.ready)
@@ -415,7 +425,7 @@ struct ReaderView: View {
             hasPanel: searchVisible || panel != nil,
             canTurn: controller.ready && showsPageTurnButtons && (isDesktop || (panel == nil && !searchVisible)),
             canSearch: controller.ready && ReaderCapabilities(format: prepared.book.format).textSearch,
-            canBookmark: controller.ready,
+            canBookmark: controller.ready && verifiedFingerprint != nil,
             canIncreaseText: prepared.book.format == .epub && !originalFormatting && !controller.fixedLayout && model.preferences.fontSize < 36,
             canDecreaseText: prepared.book.format == .epub && !originalFormatting && !controller.fixedLayout && model.preferences.fontSize > 14,
             controls: { toggleReaderControls() },
@@ -438,7 +448,17 @@ struct ReaderView: View {
             Text("This chapter could not be opened. Your current reading position is unchanged.")
         }
         .preferredColorScheme(darkReader ? .dark : .light)
+        .sheet(isPresented: $showingJellyfinRecovery) {
+            NavigationStack { JellyfinReadingRecoveryView(prepared: prepared, controller: controller).environment(model) }
+        }
         .onAppear { originalFormatting = model.readingStore(for: prepared.book)?.usesOriginalFormatting(bookID: prepared.id) ?? false; controller.changed = { model.savePosition($0, book: prepared.book) }; configureAnnotationActions(); scrubFraction = progressFraction; controller.pageTapZoneFraction = model.preferences.pageTapZoneFraction }
+        .task(id: "\(scenePhase)|\(automaticJellyfinRecovery)|\(showingJellyfinRecovery)|\(prepared.id)") {
+            guard scenePhase == .active, automaticJellyfinRecovery, !showingJellyfinRecovery else { return }
+            while !Task.isCancelled {
+                await model.retryAutomaticJellyfinRecovery()
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
         .onChange(of: model.preferences.pageTapZoneFraction) { _, width in controller.pageTapZoneFraction = width }
         .onChange(of: controller.ready) { _, ready in if ready { onContentReady(true) } }
         .onChange(of: controller.ready) { _, ready in if !ready { controller.highlighterColor = nil } }
@@ -470,7 +490,7 @@ struct ReaderView: View {
         .onChange(of: voiceOver) { _, _ in controlsActivity = UUID() }
         .onChange(of: searchVisible) { _, visible in controlsActivity = UUID(); searchFocused = visible }
         .task(id: "\(currentFingerprintSourceKey)|\(fingerprintAttempt)") {
-            if prepared.book.format == .pdf { await verifyBookFingerprint() }
+            if prepared.book.format != .epub { await verifyBookFingerprint() }
         }
         .task(id: controlsActivity) {
             #if os(iOS)
@@ -490,6 +510,9 @@ struct ReaderView: View {
         .onDisappear { searchRevealTask?.cancel(); selectionExpiryTask?.cancel(); controller.cancelSearch(); controller.changed = nil; controller.selectionMenuAction = nil; controller.annotationAction = nil; controller.highlighterAction = nil; controller.highlighterColor = nil; Task { await model.flushProgress() } }
         .task(id: "\(currentFingerprintSourceKey)|\(fingerprintAttempt)") {
             guard prepared.book.format == .epub, verifiedFingerprint == nil else { return }
+            if let fingerprint = prepared.contentFingerprint {
+                bookFingerprint = fingerprint; fingerprintSourceKey = currentFingerprintSourceKey; return
+            }
             let sourceKey = currentFingerprintSourceKey
             fingerprintFailed = false
             do {
@@ -579,6 +602,10 @@ struct ReaderView: View {
                                 Button("Highlight selection", systemImage: "highlighter", action: highlightPDFSelection).disabled(verifiedFingerprint == nil)
                             }
                             Button("Notes", systemImage: "note.text") { navigationTab = 2; panel = .contents }
+                            if model.canRecoverOpenJellyfinBook {
+                                Button("Private Reading Recovery", systemImage: "icloud") { showingJellyfinRecovery = true }
+                                    .disabled(model.jellyfinRecoveryRunning || !controller.ready)
+                            }
                             Button("Contents", systemImage: "list.bullet") { navigationTab = 0; panel = .contents }
                             if let bookmark = currentBookmark {
                                 Button("Remove bookmark here", systemImage: "bookmark.slash") { removeBookmark(bookmark) }
@@ -709,6 +736,7 @@ struct ReaderView: View {
     }
     private var currentBookmark: Bookmark? {
         (model.readingStore(for: prepared.book)?.bookmarks[prepared.id] ?? []).first { bookmark in
+            guard bookmark.availablePosition(fingerprint: verifiedFingerprint, format: prepared.book.format, pageCount: controller.pageCount) != nil else { return false }
             if prepared.book.format == .epub { return bookmark.position.cfi != nil && bookmark.position.cfi == controller.position.cfi }
             return bookmark.position.page == controller.position.page
         }
@@ -786,7 +814,12 @@ struct ReaderView: View {
         }
     }
     private func addBookmark() {
-        let added = model.addBookmark(book: prepared.book, position: controller.position)
+        guard controller.ready else { bookmarkFeedback = "Wait for this page to finish loading"; return }
+        guard let fingerprint = verifiedFingerprint else {
+            bookmarkFeedback = fingerprintFailed ? "Could not verify this book for bookmarking" : "Checking book content…"
+            return
+        }
+        let added = model.addBookmark(book: prepared.book, position: controller.position, fingerprint: fingerprint)
         bookmarkFeedback = model.error == nil ? (added ? "Bookmark added" : "Already bookmarked") : "Bookmark could not be saved"
 
     }
@@ -1351,18 +1384,44 @@ struct ReaderView: View {
             TextField("Search notes", text: $annotationSearch)
                 .textFieldStyle(.roundedBorder).padding(.horizontal)
         }
+        if navigationTab == 1 {
+            TextField("Search bookmarks", text: $bookmarkSearch)
+                .textFieldStyle(.roundedBorder).padding(.horizontal)
+        }
         List {
             if navigationTab == 1 { Section("Bookmarks") {
                 let bookmarks = model.readingStore(for: prepared.book)?.bookmarks[prepared.id] ?? []
+                let query = bookmarkSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+                let matchingBookmarks = bookmarks.filter { query.isEmpty || $0.name.localizedStandardContains(query) }
                 if let bookmark = currentBookmark {
                     Button("Remove bookmark on this page", systemImage: "bookmark.slash") { removeBookmark(bookmark) }
                 } else {
                     Button("Bookmark this page", systemImage: "bookmark.fill") { addBookmark() }
+                        .disabled(!controller.ready || verifiedFingerprint == nil)
                 }
                 if bookmarks.isEmpty { Text("No bookmarks yet").foregroundStyle(.secondary) }
-                ForEach(bookmarks) { bookmark in
+                else if matchingBookmarks.isEmpty { Text("No matching bookmarks").foregroundStyle(.secondary) }
+                if verifiedFingerprint == nil {
+                    Text(fingerprintFailed ? "Could not verify this book's content." : "Checking book content…").foregroundStyle(.secondary)
+                    if fingerprintFailed { Button("Retry checking book") { fingerprintAttempt += 1 } }
+                }
+                ForEach(matchingBookmarks) { bookmark in
                     HStack {
-                        Button(bookmark.name) { controller.returnPosition = controller.position; seek(bookmark.position); closeContentsIfCompact() }
+                        VStack(alignment: .leading) {
+                            Button(bookmark.name) {
+                                guard bookmark.hasValidLocation(format: prepared.book.format, pageCount: controller.pageCount) else {
+                                    model.error = "This bookmark's saved location is unavailable. The bookmark is preserved for renaming or export."
+                                    return
+                                }
+                                if bookmark.availablePosition(fingerprint: verifiedFingerprint, format: prepared.book.format, pageCount: controller.pageCount) != nil {
+                                    controller.returnPosition = controller.position; seek(bookmark.position); closeContentsIfCompact()
+                                } else { reviewingBookmarkSourceKey = currentFingerprintSourceKey; reviewingBookmark = bookmark }
+                            }
+                            .disabled(verifiedFingerprint == nil)
+                            if bookmark.availablePosition(fingerprint: verifiedFingerprint, format: prepared.book.format, pageCount: controller.pageCount) == nil {
+                                Text("Location needs review").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                         Spacer()
                         Button { bookmarkName = bookmark.name; editingBookmark = bookmark } label: { Image(systemName: "pencil").frame(width: 44, height: 44) }.accessibilityLabel("Rename bookmark \(bookmark.name)")
                         Button(role: .destructive) { removeBookmark(bookmark) } label: { Image(systemName: "trash").frame(width: 44, height: 44) }.accessibilityLabel("Delete bookmark \(bookmark.name)")
@@ -1392,7 +1451,7 @@ struct ReaderView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Button("Add note to this page", systemImage: "square.and.pencil") {
-                        guard let bookFingerprint = verifiedFingerprint else { return }
+                        guard controller.ready, let bookFingerprint = verifiedFingerprint else { return }
                         editingNote = ReadingAnnotation(anchor: .page(controller.position.page), selectedText: nil, context: nil, note: "", color: nil, contentFingerprint: bookFingerprint)
                     }.disabled(!controller.ready || verifiedFingerprint == nil)
                 }
@@ -1456,6 +1515,16 @@ struct ReaderView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: { note in Text(note.selectedText == nil ? "This page note will be removed from this device." : "This highlight and its note will be removed from this device.") }
+        .alert("Review bookmark location", item: $reviewingBookmark) { bookmark in
+            Button("Try saved location") {
+                guard reviewingBookmarkSourceKey == currentFingerprintSourceKey,
+                      bookmark.hasValidLocation(format: prepared.book.format, pageCount: controller.pageCount) else { return }
+                controller.returnPosition = controller.position; seek(bookmark.position); closeContentsIfCompact()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: { _ in
+            Text("This bookmark was saved in an unverified or different edition. Its location may lead to another passage. Trying the location keeps the original bookmark unchanged.")
+        }
         .alert("Rename bookmark", item: $editingBookmark) { bookmark in
             TextField("Name", text: $bookmarkName)
             Button("Cancel", role: .cancel) { }
@@ -1475,6 +1544,9 @@ struct ReaderView: View {
     private func verifyBookFingerprint() async {
         guard verifiedFingerprint == nil else { return }
         let sourceKey = currentFingerprintSourceKey
+        if let fingerprint = prepared.contentFingerprint {
+            bookFingerprint = fingerprint; fingerprintSourceKey = sourceKey; return
+        }
         fingerprintFailed = false
         do {
             let files = prepared.book.format == .pdf ? [prepared.document] : prepared.images
@@ -1498,13 +1570,8 @@ struct ReaderView: View {
         }
     }
     private func prepareExport(asJSON: Bool) {
-        guard let store = model.readingStore(for: prepared.book) else { model.error = "The reading data is unavailable."; return }
-        let annotations = store.annotations[prepared.id] ?? []
-        let bookmarks = store.bookmarks[prepared.id] ?? []
         do {
-            let data = try asJSON
-                ? AnnotationExport.json(title: prepared.book.title, format: prepared.book.format, annotations: annotations, bookmarks: bookmarks)
-                : AnnotationExport.markdown(title: prepared.book.title, format: prepared.book.format, annotations: annotations, bookmarks: bookmarks)
+            let data = try model.exportReadingData(for: prepared.book, asJSON: asJSON)
             exportType = asJSON ? .json : (UTType(filenameExtension: "md") ?? .plainText)
             exportDocument = ReadingDataDocument(data: data)
             showingExport = true
@@ -1574,6 +1641,373 @@ struct ReaderView: View {
     private func seek(_ position: ReadingPosition) {
         if prepared.book.format == .epub { controller.command?("seek", ["cfi": position.cfi as Any? ?? NSNull(), "fraction": position.fraction]) }
         else { controller.command?("page", position.page) }
+    }
+}
+
+private struct JellyfinReadingRecoveryView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("automaticJellyfinRecovery") private var automaticRecovery = false
+    @AppStorage("automaticJellyfinRecoveryAccount") private var automaticAccount = ""
+    @AppStorage("automaticJellyfinRecoverySource") private var automaticSource = ""
+    let prepared: PreparedBook
+    let controller: ReaderController
+    @State private var service: StandaloneCloudRecoveryService?
+    @State private var inspection: StandaloneCloudRecoveryService.Inspection?
+    @State private var candidate: JellyfinPositionCandidate?
+    @State private var busy = false
+    @State private var message: String?
+    @State private var confirmingCreate = false
+    @State private var confirmingPosition = false
+    @State private var confirmingEarlierLibrary = false
+    @State private var confirmingAccountSwitch = false
+    @State private var task: Task<Void, Never>?
+    @State private var reviews: [JellyfinReadingReviewItem] = []
+    @State private var reviewing: JellyfinReadingReviewItem?
+    @State private var incoming: [JellyfinIncomingReadingItem] = []
+    @State private var reviewingIncoming: JellyfinIncomingReadingItem?
+
+    var body: some View {
+        Form {
+            Section("Private Reading Recovery") {
+                Text("Sync this Jellyfin book’s reading data using your private iCloud account. Your Jellyfin server book is not changed.")
+                Text("Recovery is being tested. Keep your existing copies until you have verified your reading data.").foregroundStyle(.secondary)
+                if busy { ProgressView("Checking recovery…") }
+                if let message { Text(message).foregroundStyle(.secondary) }
+                if automaticRecovery, let status = model.automaticJellyfinRecoveryStatus {
+                    Text(status).font(.footnote).foregroundStyle(.secondary)
+                }
+                if automaticRecovery && (inspection == nil || automaticAccount != inspection?.scope.cloudAccountKey || automaticSource != inspection?.scope.sourceKey) {
+                    Button("Turn Off Automatic Recovery") { model.configureAutomaticJellyfinRecovery(enabled: false) }
+                        .disabled(busy || model.jellyfinRecoveryRunning)
+                }
+                Button("Check iCloud") { checkAccount() }.disabled(busy)
+                if let inspection {
+                    if model.canReviewEarlierJellyfinRecovery(scope: inspection.scope) {
+                        Text("Earlier recovery data needs a library review before syncing.")
+                        if let account = model.account {
+                            Text("Jellyfin library: \(libraryAddress(account.server)) · \(account.username)")
+                                .font(.footnote).textSelection(.enabled)
+                        }
+                        Button("Review Earlier Recovery…") { confirmingEarlierLibrary = true }
+                            .disabled(busy || model.jellyfinRecoveryRunning)
+                    } else if model.canSwitchJellyfinRecoveryAccount(scope: inspection.scope) {
+                        Text("This library’s reading recovery is linked to a different iCloud account.")
+                        switch inspection.zoneState {
+                        case .present:
+                            Button("Review Account Switch…") { confirmingAccountSwitch = true }
+                                .disabled(busy || model.jellyfinRecoveryRunning)
+                        case .missing:
+                            Text("The current iCloud account has no recovery area for this library.").foregroundStyle(.secondary)
+                            Button("Set Up Recovery…") { confirmingCreate = true }.disabled(busy || model.jellyfinRecoveryRunning)
+                        case .deletedByUser:
+                            Text("The current account’s recovery area was removed or reset and needs review.").foregroundStyle(.secondary)
+                        }
+                    } else { switch inspection.zoneState {
+                    case .present:
+                        Button("Sync Reading Data") { sync(inspection) }.disabled(busy || model.jellyfinRecoveryRunning)
+                        Toggle("Sync Open Jellyfin Book Automatically", isOn: Binding(
+                            get: { automaticRecovery && automaticAccount == inspection.scope.cloudAccountKey && automaticSource == inspection.scope.sourceKey },
+                            set: { model.configureAutomaticJellyfinRecovery(enabled: $0, scope: inspection.scope) }
+                        )).disabled(busy || model.jellyfinRecoveryRunning)
+                        Text("LibraVia retries while a Jellyfin book is open and the app is active. Saved positions are never applied without review.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    case .missing:
+                        Text("No recovery area was found for this Jellyfin account.").foregroundStyle(.secondary)
+                        Button("Set Up Recovery…") { confirmingCreate = true }.disabled(busy)
+                    case .deletedByUser:
+                        Text("The recovery area was removed or reset. Your local reading data is unchanged.").foregroundStyle(.secondary)
+                    } }
+                }
+                if let candidate {
+                    if prepared.book.format == .epub, candidate.position.fraction.isFinite {
+                        Text("Saved position: \(min(1, max(0, candidate.position.fraction)).formatted(.percent.precision(.fractionLength(1))))")
+                    } else if prepared.book.format != .epub {
+                        Text("Saved position: page \(candidate.position.page < Int.max ? candidate.position.page + 1 : candidate.position.page)")
+                    }
+                    Text("Using the saved position moves this book from your current place.")
+                        .foregroundStyle(.secondary)
+                    if candidate.editionFingerprint == nil {
+                        Text("This older position has no edition information.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Button("Use Saved Position…") { confirmingPosition = true }
+                        .disabled(busy || !controller.ready || controller.command == nil)
+                }
+            }
+            if !incoming.isEmpty {
+                Section("Incoming reading changes") {
+                    ForEach(incoming) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            reviewDetails(item.payload, kind: item.key.kind)
+                            if item.key.kind == .position && item.payload == nil {
+                                Text("This removes the saved recovery position on this device. Your open reader and Jellyfin server are not moved.").font(.footnote).foregroundStyle(.secondary)
+                                Button("Review Position Deletion…") { reviewingIncoming = item }
+                                    .disabled(busy || inspection?.zoneState != .present || !controller.ready || controller.command == nil)
+                            } else if item.editionFingerprint == nil {
+                                Text("This older change has no edition information.").font(.footnote).foregroundStyle(.secondary)
+                                Button("Review This Change…") { reviewingIncoming = item }.disabled(busy || inspection?.zoneState != .present)
+                            } else {
+                                Text("This change could not be restored automatically. Check the book edition and try recovery again.").font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }.padding(.vertical, 4)
+                    }
+                }
+            }
+            if !reviews.isEmpty {
+                Section("Reading changes to review") {
+                    ForEach(reviews) { item in
+                        VStack(alignment: .leading, spacing: 8) {
+                            if item.remote != nil { Text(item.currentIsStaged ? "Earlier iCloud version" : "On this device").font(.subheadline.bold()) }
+                            reviewDetails(item.current.payload, kind: item.key.kind)
+                            if let remote = item.remote {
+                                Text("Other iCloud version").font(.subheadline.bold())
+                                reviewDetails(remote.payload, kind: item.key.kind)
+                                if item.key.kind == .position {
+                                    Text("Choosing a position moves the reader. Choosing a deletion removes the saved recovery position without moving the reader.").font(.footnote).foregroundStyle(.secondary)
+                                }
+                                Button("Choose a Version…") { reviewing = item }
+                                    .disabled(busy || inspection?.zoneState != .present || (item.key.kind == .position && (!controller.ready || controller.command == nil)))
+                            } else {
+                                Button(item.current.payload == nil ? "Review Deletion…" : "Confirm This Edition…") { reviewing = item }.disabled(busy || inspection?.zoneState != .present)
+                            }
+                        }.padding(.vertical, 4)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped).appSurface().navigationTitle("Reading Recovery")
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        .confirmationDialog("Set up a new recovery area?", isPresented: $confirmingCreate, titleVisibility: .visible) {
+            Button("Set Up Recovery") { createZone() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Check that you are signed into the same iCloud and Jellyfin accounts used on your other device. A new area cannot restore data missing from iCloud.")
+        }
+        .confirmationDialog("Move to the saved position?", isPresented: $confirmingPosition, titleVisibility: .visible) {
+            Button("Use Saved Position") { applyPosition() }
+            Button("Cancel", role: .cancel) { }
+        } message: { Text(candidate?.editionFingerprint == nil ? "Confirm this older position belongs to the open edition. LibraVia will recheck the book and Jellyfin progress before moving." : "LibraVia will recheck this book’s edition and Jellyfin progress before moving.") }
+        .confirmationDialog("Move earlier recovery data to this library?", isPresented: $confirmingEarlierLibrary, titleVisibility: .visible) {
+            Button("Confirm Library and Continue") { migrateEarlierLibrary() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Confirm the Jellyfin library shown is the one used for this earlier recovery data. Stop syncing with earlier LibraVia versions on all devices first. Changes made there after this scan will not be included. LibraVia will keep the earlier data and stage conflicting changes for review.")
+        }
+        .confirmationDialog("Use the current iCloud account?", isPresented: $confirmingAccountSwitch, titleVisibility: .visible) {
+            Button("Use Current iCloud Account") { switchRecoveryAccount() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("LibraVia will copy this device’s Jellyfin reading data into the current iCloud account’s recovery journal and check that account for existing changes. Differences will need review. The earlier account’s recovery data remains available there.")
+        }
+        .confirmationDialog("Restore this older change?", item: $reviewingIncoming, titleVisibility: .visible) { item in
+            Button(item.payload == nil ? "Confirm and Apply Deletion" : "Confirm and Restore") { confirmIncoming(item) }
+            Button("Cancel", role: .cancel) { }
+        } message: { item in
+            Text(item.key.kind == .position && item.payload == nil ? "This removes the saved recovery position on this device. The open reader and Jellyfin server will stay at their current positions. LibraVia will check the book and server progress first." : item.payload == nil ? "This deletion has no saved content to display. Confirm only if it belongs to the open edition. It will remove this reading item on this device." : "Confirm this change belongs to the open edition. It will be restored here and queued for the next sync.")
+        }
+        .confirmationDialog("Review this reading change", item: $reviewing, titleVisibility: .visible) { item in
+            if let remote = item.remote {
+                if reviewable(item.current, kind: item.key.kind) {
+                    Button(choiceLabel(item.current, source: item.currentIsStaged ? "Earlier iCloud" : "Device")) { review(item, choice: .local) }
+                }
+                if reviewable(remote, kind: item.key.kind) { Button(choiceLabel(remote, source: "Other iCloud")) { review(item, choice: .remote) } }
+            } else { Button(item.current.payload == nil ? "Confirm Deletion" : "Confirm This Edition") { review(item, choice: nil) } }
+        } message: { item in
+            Text(item.key.kind == .position ? "LibraVia checks the book and Jellyfin progress first. Selecting a position moves the reader; selecting a deletion removes the saved recovery position without moving the open reader or changing Jellyfin. Confirm an older version belongs to this edition. Other alternatives remain for review." : item.remote == nil ? (item.current.payload == nil ? "This \(item.key.kind.rawValue) deletion has no saved content to display. Confirm only if it belongs to the currently open edition. Any cloud alternative remains for review." : "Confirm this change belongs to the currently open edition. Any cloud alternative remains for review.") : "Confirm any version without edition information belongs to the currently open edition. Other alternatives remain for review.")
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active, service != nil || task != nil else { return }
+            task?.cancel(); service = nil; inspection = nil; candidate = nil; reviews = []; incoming = []
+            message = "Recovery paused. Check iCloud again to continue."
+        }
+        .onDisappear { task?.cancel(); task = nil }
+    }
+
+    private func reviewable(_ version: CloudReadingVersion, kind: CloudReadingKind) -> Bool {
+        guard kind == .position else { return true }
+        if case .position = version.payload { return true }
+        if version.payload == nil { return true }
+        return false
+    }
+
+    private func choiceLabel(_ version: CloudReadingVersion, source: String) -> String {
+        let value = version.payload == nil ? "Deletion" : "Version"
+        return "Keep \(source) \(value)" + (version.editionFingerprint == nil ? " and Confirm Edition" : "")
+    }
+
+    private func libraryAddress(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.host ?? "Jellyfin" }
+        components.user = nil; components.password = nil; components.query = nil; components.fragment = nil
+        return components.string ?? url.host ?? "Jellyfin"
+    }
+
+    @ViewBuilder private func reviewDetails(_ payload: CloudReadingPayload?, kind: CloudReadingKind) -> some View {
+        switch payload {
+        case .position(let position):
+            if prepared.book.format == .epub, position.position.fraction.isFinite {
+                Text("Position: \(min(1, max(0, position.position.fraction)).formatted(.percent.precision(.fractionLength(1))))")
+            } else { Text("Position: page \(position.position.page < Int.max ? position.position.page + 1 : position.position.page)") }
+            if let cfi = position.position.cfi { Text(cfi).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled) }
+        case .bookmark(let bookmark):
+            Text("Bookmark: \(bookmark.name)")
+            if prepared.book.format == .epub, bookmark.position.fraction.isFinite {
+                Text(bookmark.position.fraction.formatted(.percent.precision(.fractionLength(1)))).font(.footnote).foregroundStyle(.secondary)
+            } else { Text("Page \(bookmark.position.page < Int.max ? bookmark.position.page + 1 : bookmark.position.page)").font(.footnote).foregroundStyle(.secondary) }
+            if let cfi = bookmark.position.cfi { Text(cfi).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled) }
+        case .annotation(let annotation):
+            Text("Highlight or note")
+            if let selected = annotation.selectedText, !selected.isEmpty { Text(selected) }
+            if !annotation.note.isEmpty { Text(annotation.note) }
+            switch annotation.anchor {
+            case .epub(let cfi): Text(cfi).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+            case .pdf(let page, _), .page(let page): Text("Page \(page < Int.max ? page + 1 : page)").font(.footnote).foregroundStyle(.secondary)
+            }
+        case nil: Text("Deleted \(kind.rawValue)")
+        }
+    }
+    private func review(_ item: JellyfinReadingReviewItem, choice: CloudAtomicReadingStore.ConflictChoice?) {
+        guard let service, let inspection else { return }
+        let isPosition = item.key.kind == .position
+        guard !isPosition || (controller.ready && controller.command != nil) else { return }
+        let previous = controller.position
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                let position = try await model.reviewJellyfinReadingItem(item, scope: inspection.scope, choice: choice,
+                    accountIsCurrent: { try await service.validate(inspection) },
+                    confirmUnverifiedEdition: choice.map { $0 == .local ? item.current.editionFingerprint == nil : item.remote.map { $0.editionFingerprint == nil } ?? false } ?? false,
+                    stillReadingSamePosition: { controller.ready && controller.position == previous && controller.command != nil })
+                if let position {
+                    controller.returnPosition = previous
+                    if prepared.book.format == .epub { controller.command?("seek", ["cfi": position.cfi as Any? ?? NSNull(), "fraction": position.fraction]) }
+                    else { controller.command?("page", position.page) }
+                }
+                reviews = model.pendingJellyfinReadingReviews(scope: inspection.scope)
+                incoming = model.pendingJellyfinIncomingReading(scope: inspection.scope)
+                message = position == nil ? "The change is ready for the next reading-data sync." : "Moving to the selected position. Sync again to save the choice."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+
+    private func checkAccount() {
+        busy = true; message = nil; inspection = nil; candidate = nil; reviews = []; incoming = []
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                let service = try model.makeJellyfinCloudRecoveryService()
+                let result = try await service.inspect()
+                if !model.canReviewEarlierJellyfinRecovery(scope: result.scope) && !model.canSwitchJellyfinRecoveryAccount(scope: result.scope) {
+                    try model.checkJellyfinRecoveryScope(result.scope)
+                }
+                try Task.checkCancellation(); self.service = service; inspection = result
+                candidate = model.stagedJellyfinPosition(scope: result.scope)
+                reviews = model.pendingJellyfinReadingReviews(scope: result.scope)
+                incoming = model.pendingJellyfinIncomingReading(scope: result.scope)
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+    private func migrateEarlierLibrary() {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                try await service.migrateEarlierLibrary(inspection)
+                try Task.checkCancellation()
+                try model.checkJellyfinRecoveryScope(inspection.scope)
+                reviews = model.pendingJellyfinReadingReviews(scope: inspection.scope)
+                incoming = model.pendingJellyfinIncomingReading(scope: inspection.scope)
+                message = inspection.zoneState == .present
+                    ? "Earlier recovery data was staged. Review any changes below, then sync this book."
+                    : "Earlier recovery data was staged. The new recovery area must be ready before changes can be reviewed and synced."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+    private func switchRecoveryAccount() {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                try await service.switchRecoveryAccount(inspection)
+                try Task.checkCancellation()
+                try model.checkJellyfinRecoveryScope(inspection.scope)
+                reviews = model.pendingJellyfinReadingReviews(scope: inspection.scope)
+                incoming = model.pendingJellyfinIncomingReading(scope: inspection.scope)
+                message = "Account changed. Review any reading differences below, then sync this book."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+    private func createZone() {
+        guard let service, let inspection else { return }
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                let updated = try await service.createAfterReviewedDecision(inspection)
+                try Task.checkCancellation(); self.inspection = updated
+                message = model.canSwitchJellyfinRecoveryAccount(scope: updated.scope)
+                    ? "Recovery is ready. Review the account switch to continue."
+                    : "Recovery is ready. Choose Sync Reading Data to begin."
+            }
+            catch { if !Task.isCancelled { self.inspection = nil; message = UserFacingError.message(error) } }
+        }
+    }
+    private func sync(_ inspection: StandaloneCloudRecoveryService.Inspection) {
+        guard let service else { return }
+        busy = true; message = nil; candidate = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                let report = try await service.run(inspection)
+                try Task.checkCancellation()
+                candidate = model.stagedJellyfinPosition(scope: inspection.scope)
+                reviews = model.pendingJellyfinReadingReviews(scope: inspection.scope)
+                incoming = model.pendingJellyfinIncomingReading(scope: inspection.scope)
+                if report.pendingItems > 0 || report.needsReview > 0 || !report.failures.isEmpty {
+                    message = "Some reading changes remain pending or need review. Your local data is kept."
+                } else { message = "Reading data pass finished. Verify it on your other device." }
+            } catch { if !Task.isCancelled { self.inspection = nil; message = UserFacingError.message(error) } }
+        }
+    }
+    private func applyPosition() {
+        guard let service, let inspection, let candidate, controller.ready, controller.command != nil else { return }
+        let previous = controller.position
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                let position = try await model.applyStagedJellyfinPosition(candidate, scope: inspection.scope,
+                    stillReadingSamePosition: { controller.ready && controller.position == previous && controller.command != nil },
+                    accountIsCurrent: { try await service.validate(inspection) },
+                    confirmLegacyEdition: candidate.editionFingerprint == nil)
+                controller.returnPosition = previous
+                if prepared.book.format == .epub { controller.command?("seek", ["cfi": position.cfi as Any? ?? NSNull(), "fraction": position.fraction]) }
+                else { controller.command?("page", position.page) }
+                self.candidate = nil; message = "Moving to the saved position."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
+    }
+
+    private func confirmIncoming(_ item: JellyfinIncomingReadingItem) {
+        guard let service, let inspection else { return }
+        let positionDeletion = item.key.kind == .position && item.payload == nil
+        guard !positionDeletion || (controller.ready && controller.command != nil) else { return }
+        let previous = controller.position
+        busy = true; message = nil
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                try await model.confirmJellyfinIncomingReading(item, scope: inspection.scope,
+                    accountIsCurrent: { try await service.validate(inspection) },
+                    stillReadingSamePosition: { controller.ready && controller.position == previous && controller.command != nil })
+                incoming = model.pendingJellyfinIncomingReading(scope: inspection.scope)
+                reviews = model.pendingJellyfinReadingReviews(scope: inspection.scope)
+                message = "The change was applied on this device."
+            } catch { if !Task.isCancelled { message = UserFacingError.message(error) } }
+        }
     }
 }
 
@@ -1704,7 +2138,7 @@ struct BookOpeningView: View {
         ZStack {
             paper.ignoresSafeArea()
             if let prepared = model.reader, prepared.id == book.id {
-                ReaderView(prepared: prepared) { contentReady = $0 }
+                ReaderView(prepared: model.currentReaderPreparation(prepared)) { contentReady = $0 }
                     .allowsHitTesting(opening)
                     .accessibilityHidden(!opening)
             }
@@ -1733,6 +2167,7 @@ struct BookOpeningView: View {
                         }
                     }.frame(width: geometry.size.width, height: geometry.size.height)
                 }.allowsHitTesting(!opening).accessibilityLabel("Opening \(book.title)")
+                    .accessibilityHidden(model.positionEditionReview != nil || model.conflict != nil || (model.error != nil && model.reader == nil))
                 if !opening {
                     VStack {
                         HStack {
@@ -1742,9 +2177,30 @@ struct BookOpeningView: View {
                         }.padding(.horizontal, 16)
                         Spacer()
                     }.padding(.top, 2)
+                        .accessibilityHidden(model.positionEditionReview != nil || model.conflict != nil || (model.error != nil && model.reader == nil))
                 }
             }
-            if let conflict = model.conflict {
+            if let review = model.positionEditionReview, review.prepared.id == book.id {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Label("Review saved place", systemImage: "book.closed").font(.title2.bold())
+                        Text(book.title).font(.headline)
+                        Text(review.previous.contentFingerprint == nil
+                             ? "The edition for your earlier saved place was not recorded."
+                             : "This copy differs from the edition of your earlier saved place.")
+                        Text("Your earlier place will be kept as a bookmark before you continue. Cancelling keeps the saved position unchanged.")
+                            .foregroundStyle(.secondary)
+                        Button("Try earlier saved place") { model.resolvePositionEditionReview(review.id, choice: .saved) }
+                            .disabled(!review.canTrySaved)
+                        if review.canUseSuggested {
+                            Button("Use Jellyfin's position") { model.resolvePositionEditionReview(review.id, choice: .suggested) }
+                        }
+                        Button("Start at beginning") { model.resolvePositionEditionReview(review.id, choice: .beginning) }
+                        Button("Back to library", role: .cancel) { close() }
+                        if let error = model.error { Text(error).foregroundStyle(.red).accessibilityLabel("Could not continue. \(error)") }
+                    }.buttonStyle(.bordered).padding(24).frame(maxWidth: 520)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).background(paper.ignoresSafeArea())
+            } else if let conflict = model.conflict {
                 ReadingConflictChoice(conflict: conflict) { model.conflict = nil; close() }
                     .frame(maxWidth: .infinity, maxHeight: .infinity).background(paper.ignoresSafeArea())
             } else if let error = model.error, model.reader == nil {
