@@ -4,6 +4,14 @@ The public repository is connected to Xcode Cloud. The commands below are docume
 
 LibraVia has one shared target, scheme, and bundle identifier. iOS/iPadOS and native macOS still require separate destination archives and uploads. Use one App Store Connect app record with the matching identifier and the required platforms.
 
+## 0.2.5 alpha source-release status
+
+The owner authorized the 0.2.5 alpha source prerelease, with source marketing version 0.2.5 and build 56. The owner intends to trigger Xcode Cloud and internal TestFlight after publication. Source publication does not upload a binary, establish processing, or make a build available to testers. Inspect each actual Cloud archive and processed artifact for its commit, marketing version, build number, signing and entitlements; do not assume Cloud's build number from the source setting. See [release notes](docs/releases/0.2.5.md) and [VALIDATION.md](VALIDATION.md).
+
+## Internal test focus
+
+Exercise reader transitions and controls, search and selection, notes and highlights, import and offline save, and resizing on representative books and devices. Keep the physical iPhone/iPad, accessibility, offline reliability, and data-recovery gaps open until individually verified. Local reading data and imported books do not yet sync or restore via iCloud; Jellyfin sign-out warns that it deletes the account's local unsynced data. Gates #28 and #29 remain open.
+
 ## Prerequisites
 
 - Active Apple Developer membership and App Store Connect permission to create the app and upload builds.

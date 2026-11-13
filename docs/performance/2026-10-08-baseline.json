@@ -1,0 +1,538 @@
+{
+  "build_configuration": "swiftc -O; bundled source renderer; no app build",
+  "cache_policy": "First sample in fresh process; OS filesystem cache not purged. Subsequent samples warm. No cold-device claim.",
+  "candidate": "6a59dcd700fdb24f59d25f480867ace77039327f",
+  "captured_at_utc": "2026-10-08T18:44:02.880874+00:00",
+  "environment": {
+    "architecture": "arm64",
+    "hardware_model": "Mac15,6",
+    "os": "27.2",
+    "xcode": [
+      "Xcode 27.0",
+      "Build version 27A266a"
+    ]
+  },
+  "fixtures": [
+    {
+      "characteristics": {
+        "kind": "text_pdf",
+        "pages": 3
+      },
+      "evidence": "isolated_framework",
+      "name": "Harbor.pdf",
+      "samples": {
+        "document_open_ms": [
+          59.32283333095256,
+          0.3820416604867205,
+          0.23691667593084276,
+          0.20079166279174387,
+          0.21816666412632912,
+          0.13437500456348062,
+          0.26358333707321435,
+          0.222958333324641,
+          0.23708332446403801,
+          0.26841666840482503
+        ],
+        "first_page_render_ms": [
+          6.465416663559154,
+          1.1220000014873222,
+          0.9685416589491069,
+          0.9057916613528505,
+          0.9142083290498704,
+          1.1827083362732083,
+          1.0372083343099803,
+          0.9820416598813608,
+          1.0583333350950852,
+          1.064166659489274
+        ],
+        "search_ms": [
+          1.2859166599810123,
+          0.6067500071367249,
+          0.5104583397042006,
+          0.5762500077253208,
+          0.4656666569644585,
+          0.6764166610082611,
+          0.6139583420008421,
+          0.5539999983739108,
+          0.682333338772878,
+          0.6187499966472387
+        ],
+        "selection_construct_ms": [
+          0.0113333371700719,
+          0.004166664439253509,
+          0.003500012098811567,
+          0.0036666751839220524,
+          0.0029999937396496534,
+          0.0056249991757795215,
+          0.005375011824071407,
+          0.0037083373172208667,
+          0.00650000583846122,
+          0.00483333133161068
+        ]
+      },
+      "source_sha256": "6668ff20a67bfd2409e464f71f58934ab26a1f416a9896538eee8fe33355ffed",
+      "status": "measured",
+      "summary": {
+        "document_open_ms": {
+          "first_ms": 59.32283333095256,
+          "max_ms": 59.32283333095256,
+          "median_ms": 0.23700000019744039,
+          "n": 10,
+          "p95_ms": 59.32283333095256
+        },
+        "first_page_render_ms": {
+          "first_ms": 6.465416663559154,
+          "max_ms": 6.465416663559154,
+          "median_ms": 1.0477708347025327,
+          "n": 10,
+          "p95_ms": 6.465416663559154
+        },
+        "search_ms": {
+          "first_ms": 1.2859166599810123,
+          "max_ms": 1.2859166599810123,
+          "median_ms": 0.6103541745687835,
+          "n": 10,
+          "p95_ms": 1.2859166599810123
+        },
+        "selection_construct_ms": {
+          "first_ms": 0.0113333371700719,
+          "max_ms": 0.0113333371700719,
+          "median_ms": 0.004499997885432094,
+          "n": 10,
+          "p95_ms": 0.0113333371700719
+        }
+      },
+      "warm_summary": {
+        "document_open_ms": {
+          "first_ms": 0.3820416604867205,
+          "max_ms": 0.3820416604867205,
+          "median_ms": 0.23691667593084276,
+          "n": 9,
+          "p95_ms": 0.3820416604867205
+        },
+        "first_page_render_ms": {
+          "first_ms": 1.1220000014873222,
+          "max_ms": 1.1827083362732083,
+          "median_ms": 1.0372083343099803,
+          "n": 9,
+          "p95_ms": 1.1827083362732083
+        },
+        "search_ms": {
+          "first_ms": 0.6067500071367249,
+          "max_ms": 0.682333338772878,
+          "median_ms": 0.6067500071367249,
+          "n": 9,
+          "p95_ms": 0.682333338772878
+        },
+        "selection_construct_ms": {
+          "first_ms": 0.004166664439253509,
+          "max_ms": 0.00650000583846122,
+          "median_ms": 0.004166664439253509,
+          "n": 9,
+          "p95_ms": 0.00650000583846122
+        }
+      }
+    },
+    {
+      "characteristics": {
+        "kind": "repeated_original_text_pdf",
+        "pages": 180
+      },
+      "evidence": "isolated_framework",
+      "name": "Harbor-long.pdf",
+      "samples": {
+        "document_open_ms": [
+          49.2999583366327,
+          1.3597916695289314,
+          1.4587500045308843,
+          1.5101666649570689,
+          1.5798333333805203,
+          1.700000007986091,
+          1.5384999860543758,
+          1.4117083337623626,
+          1.4869583246763796,
+          1.5405000012833625
+        ],
+        "first_page_render_ms": [
+          6.4392499916721135,
+          1.2201666686451063,
+          1.2312083272263408,
+          1.24637498811353,
+          1.1429166625021026,
+          1.1495416692923754,
+          1.1277083394816145,
+          1.1150833452120423,
+          1.131124998209998,
+          1.1924166756216437
+        ],
+        "search_ms": [
+          30.492458332446404,
+          28.9385833311826,
+          28.59183332475368,
+          29.382416658336297,
+          28.7711249984568,
+          28.58391667541582,
+          29.67291667300742,
+          29.329875003895722,
+          28.150416663265787,
+          29.163791667087935
+        ],
+        "selection_construct_ms": [
+          0.012041666195727885,
+          0.008541668648831546,
+          0.00770833867136389,
+          0.007291673682630062,
+          0.007875001756474376,
+          0.006791669875383377,
+          0.007458322215825319,
+          0.006375004886649549,
+          0.006958332960493863,
+          0.007791662937961519
+        ]
+      },
+      "source_sha256": "6668ff20a67bfd2409e464f71f58934ab26a1f416a9896538eee8fe33355ffed",
+      "status": "measured",
+      "summary": {
+        "document_open_ms": {
+          "first_ms": 49.2999583366327,
+          "max_ms": 49.2999583366327,
+          "median_ms": 1.5243333255057223,
+          "n": 10,
+          "p95_ms": 49.2999583366327
+        },
+        "first_page_render_ms": {
+          "first_ms": 6.4392499916721135,
+          "max_ms": 6.4392499916721135,
+          "median_ms": 1.1709791724570096,
+          "n": 10,
+          "p95_ms": 6.4392499916721135
+        },
+        "search_ms": {
+          "first_ms": 30.492458332446404,
+          "max_ms": 30.492458332446404,
+          "median_ms": 29.051187499135267,
+          "n": 10,
+          "p95_ms": 30.492458332446404
+        },
+        "selection_construct_ms": {
+          "first_ms": 0.012041666195727885,
+          "max_ms": 0.012041666195727885,
+          "median_ms": 0.007583330443594605,
+          "n": 10,
+          "p95_ms": 0.012041666195727885
+        }
+      },
+      "warm_summary": {
+        "document_open_ms": {
+          "first_ms": 1.3597916695289314,
+          "max_ms": 1.700000007986091,
+          "median_ms": 1.5101666649570689,
+          "n": 9,
+          "p95_ms": 1.700000007986091
+        },
+        "first_page_render_ms": {
+          "first_ms": 1.2201666686451063,
+          "max_ms": 1.24637498811353,
+          "median_ms": 1.1495416692923754,
+          "n": 9,
+          "p95_ms": 1.24637498811353
+        },
+        "search_ms": {
+          "first_ms": 28.9385833311826,
+          "max_ms": 29.67291667300742,
+          "median_ms": 28.9385833311826,
+          "n": 9,
+          "p95_ms": 29.67291667300742
+        },
+        "selection_construct_ms": {
+          "first_ms": 0.008541668648831546,
+          "max_ms": 0.008541668648831546,
+          "median_ms": 0.007458322215825319,
+          "n": 9,
+          "p95_ms": 0.008541668648831546
+        }
+      }
+    },
+    {
+      "characteristics": {
+        "dimensions": [
+          800,
+          1100
+        ],
+        "kind": "decoded_first_comic_image",
+        "pages": 3
+      },
+      "evidence": "isolated_framework",
+      "name": "Harbor.cbz",
+      "samples": {
+        "image_decode_ms": [
+          9.30766666715499,
+          3.6896249948767945,
+          3.3200416655745357,
+          3.5215833340771496,
+          3.46641665964853,
+          3.3325833355775103,
+          3.404708331800066,
+          3.398458327865228,
+          3.348583326442167,
+          3.260625002440065
+        ]
+      },
+      "source_sha256": "eb8dbc4982f587821078a9d051d91e40c3bd5f948b24bb830f082f4231badc6f",
+      "status": "measured",
+      "summary": {
+        "image_decode_ms": {
+          "first_ms": 9.30766666715499,
+          "max_ms": 9.30766666715499,
+          "median_ms": 3.401583329832647,
+          "n": 10,
+          "p95_ms": 9.30766666715499
+        }
+      },
+      "warm_summary": {
+        "image_decode_ms": {
+          "first_ms": 3.6896249948767945,
+          "max_ms": 3.6896249948767945,
+          "median_ms": 3.398458327865228,
+          "n": 9,
+          "p95_ms": 3.6896249948767945
+        }
+      }
+    },
+    {
+      "characteristics": {
+        "chapters": 2,
+        "font_size": 20,
+        "kind": "reflowable_text",
+        "paragraphs": 60,
+        "viewport": [
+          375,
+          700
+        ]
+      },
+      "evidence": "isolated_webkit",
+      "name": "Harbor.epub",
+      "samples": {
+        "open_renderer_ready_ms": [
+          517.7708749979502
+        ],
+        "search_ms": [
+          5,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          2,
+          2,
+          3
+        ],
+        "selection_construct_ms": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "turn_render_ms": [
+          57,
+          60,
+          61,
+          63,
+          64,
+          63,
+          63,
+          63,
+          64,
+          63
+        ]
+      },
+      "source_sha256": "6df805b68e6611264cc8ca053143b4b4b8b8fc5cff57b1f03b98f7d3f99ff1a5",
+      "status": "measured",
+      "summary": {
+        "open_renderer_ready_ms": {
+          "first_ms": 517.7708749979502,
+          "max_ms": 517.7708749979502,
+          "median_ms": 517.7708749979502,
+          "n": 1,
+          "p95_ms": 517.7708749979502
+        },
+        "search_ms": {
+          "first_ms": 5,
+          "max_ms": 5,
+          "median_ms": 4.0,
+          "n": 10,
+          "p95_ms": 5
+        },
+        "selection_construct_ms": {
+          "first_ms": 3,
+          "max_ms": 3,
+          "median_ms": 0.0,
+          "n": 10,
+          "p95_ms": 3
+        },
+        "turn_render_ms": {
+          "first_ms": 57,
+          "max_ms": 64,
+          "median_ms": 63.0,
+          "n": 10,
+          "p95_ms": 64
+        }
+      },
+      "warm_summary": {
+        "search_ms": {
+          "first_ms": 4,
+          "max_ms": 4,
+          "median_ms": 4,
+          "n": 9,
+          "p95_ms": 4
+        },
+        "selection_construct_ms": {
+          "first_ms": 0,
+          "max_ms": 0,
+          "median_ms": 0,
+          "n": 9,
+          "p95_ms": 0
+        },
+        "turn_render_ms": {
+          "first_ms": 60,
+          "max_ms": 64,
+          "median_ms": 63,
+          "n": 9,
+          "p95_ms": 64
+        }
+      }
+    },
+    {
+      "characteristics": {
+        "chapters": 2,
+        "font_size": 20,
+        "kind": "reflowable_text",
+        "paragraphs": 1200,
+        "viewport": [
+          375,
+          700
+        ]
+      },
+      "evidence": "isolated_webkit",
+      "name": "Harbor-long.epub",
+      "samples": {
+        "open_renderer_ready_ms": [
+          349.5100416621426
+        ],
+        "search_ms": [
+          31,
+          27,
+          26,
+          27,
+          26,
+          25,
+          27,
+          26,
+          26,
+          26
+        ],
+        "selection_construct_ms": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "turn_render_ms": [
+          41,
+          35,
+          40,
+          40,
+          38,
+          43,
+          41,
+          40,
+          41,
+          39
+        ]
+      },
+      "source_sha256": "6df805b68e6611264cc8ca053143b4b4b8b8fc5cff57b1f03b98f7d3f99ff1a5",
+      "status": "measured",
+      "summary": {
+        "open_renderer_ready_ms": {
+          "first_ms": 349.5100416621426,
+          "max_ms": 349.5100416621426,
+          "median_ms": 349.5100416621426,
+          "n": 1,
+          "p95_ms": 349.5100416621426
+        },
+        "search_ms": {
+          "first_ms": 31,
+          "max_ms": 31,
+          "median_ms": 26.0,
+          "n": 10,
+          "p95_ms": 31
+        },
+        "selection_construct_ms": {
+          "first_ms": 0,
+          "max_ms": 0,
+          "median_ms": 0.0,
+          "n": 10,
+          "p95_ms": 0
+        },
+        "turn_render_ms": {
+          "first_ms": 41,
+          "max_ms": 43,
+          "median_ms": 40.0,
+          "n": 10,
+          "p95_ms": 43
+        }
+      },
+      "warm_summary": {
+        "search_ms": {
+          "first_ms": 27,
+          "max_ms": 27,
+          "median_ms": 26,
+          "n": 9,
+          "p95_ms": 27
+        },
+        "selection_construct_ms": {
+          "first_ms": 0,
+          "max_ms": 0,
+          "median_ms": 0,
+          "n": 9,
+          "p95_ms": 0
+        },
+        "turn_render_ms": {
+          "first_ms": 35,
+          "max_ms": 43,
+          "median_ms": 40,
+          "n": 9,
+          "p95_ms": 43
+        }
+      }
+    }
+  ],
+  "harness_sha256": {
+    "probe.swift": "267c74df109308db342133b98ba0f3a979582be71a2c69453e9fedbd8aa4ed5d",
+    "run.py": "91cf3447ea0dec84b52415dc14bbb904a377fb6e1fc1a2fa2ddf0567ce34dc26"
+  },
+  "iterations": 10,
+  "schema": 1,
+  "unmeasured": [
+    "physical input-to-visible-frame latency",
+    "app download/extraction/open journey",
+    "native card/curl animation smoothness",
+    "large-library UI scrolling",
+    "comic navigation and archive preparation",
+    "touch/pointer selection interaction"
+  ],
+  "working_tree_dirty": true
+}

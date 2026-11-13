@@ -1,11 +1,30 @@
 import SwiftUI
 import Observation
+import PDFKit
 
 @MainActor @Observable final class AppModel {
     var account: Account?
     var provider: JellyfinProvider?
     var store: ReadingStore?
     var cache: BookCache?
+    private var savedBooks: DurableBookStore?
+    private var downloadJournal: OfflineDownloadJournal?
+    private var downloadTask: Task<Void, Never>?
+    private var activeDownloadID: String?
+    private var activeDownloadToken: UUID?
+    private let offlineReservations = OfflineOperationReservations()
+    private(set) var downloads: [OfflineDownload] = []
+    private var onDeviceLibrary: LocalLibrary?
+    private var localFolderLibrary: LocalFolderLibrary?
+    private var onDeviceReadingStore: ReadingStore?
+    private var readingOnDevice = false
+    private(set) var onDeviceBooks: [LocalBookEntry] = []
+    private(set) var folderBooks: [FolderBookEntry] = []
+    private(set) var folderName: String?
+    private(set) var folderProblem: String?
+    private(set) var savedCatalog: [Book] = []
+    private(set) var storageUsage: StorageUsageSnapshot?
+    private var storageRequestID = UUID()
     var libraries: [Library] = []
     var selectedLibrary: String? { didSet { if let account { UserDefaults.standard.set(selectedLibrary, forKey: "library-\(stableKey(account.namespace))") } } }
     var error: String?
@@ -54,12 +73,19 @@ import Observation
         return result
     }
     func cachedCoverImage(_ book: Book, fullSize: Bool = false) -> Data? {
-        artwork.object(forKey: "\(fullSize ? "original" : "cover")|\(book.id)|\(book.imageTag ?? "")" as NSString).map { $0 as Data }
+        if book.imageTag == "local", onDeviceBooks.contains(where: { $0.id == book.id && $0.hasCover == true }) { return nil }
+        return artwork.object(forKey: "\(fullSize ? "original" : "cover")|\(book.id)|\(book.imageTag ?? "")" as NSString).map { $0 as Data }
     }
     func coverImage(_ book: Book, fullSize: Bool = false) async -> Data? {
+        if book.imageTag == "local", onDeviceBooks.contains(where: { $0.id == book.id && $0.hasCover == true }) {
+            return await onDeviceLibrary?.cover(for: book.id)
+        }
         let key = "\(fullSize ? "original" : "cover")|\(book.id)|\(book.imageTag ?? "")" as NSString
         if let value = artwork.object(forKey: key) { return value as Data }
         let current = generation
+        if let value = await savedBooks?.cover(book), current == generation, !Task.isCancelled {
+            artwork.setObject(value as NSData, forKey: key, cost: value.count); return value
+        }
         guard let value = try? await provider?.cover(book, fullSize: fullSize), current == generation, !Task.isCancelled else { return nil }
         artwork.setObject(value as NSData, forKey: key, cost: value.count); return value
     }
@@ -71,20 +97,166 @@ import Observation
         artwork.setObject(value as NSData, forKey: key, cost: value.count); return value
     }
     var bookmarksRevision = 0
+    func readingStore(for book: Book) -> ReadingStore? {
+        if readingOnDevice { return readerLaunchBook?.id == book.id ? onDeviceReadingStore : nil }
+        if onDeviceBooks.contains(where: { $0.id == book.id }), readerLaunchBook?.id != book.id { return nil }
+        return store
+    }
+    func loadOnDeviceLibrary() async {
+        do {
+            if onDeviceLibrary == nil { onDeviceLibrary = try LocalLibrary() }
+            if onDeviceReadingStore == nil { onDeviceReadingStore = try ReadingStore(namespace: LocalLibrary.namespace) }
+            if localFolderLibrary == nil { localFolderLibrary = try LocalFolderLibrary() }
+            onDeviceBooks = await onDeviceLibrary?.catalog() ?? []
+            folderName = await localFolderLibrary?.folderName
+            folderBooks = await localFolderLibrary?.books ?? []
+        } catch { self.error = "Could not open the On My Device library." }
+    }
+    func selectLocalFolder(_ url: URL) async {
+        await loadOnDeviceLibrary()
+        do {
+            guard let localFolderLibrary else { return }
+            try await localFolderLibrary.select(url)
+            folderName = await localFolderLibrary.folderName
+            folderBooks = await localFolderLibrary.books
+            await refreshLocalFolder()
+        } catch { folderProblem = "Could not access that folder. Select it again to reconnect." }
+    }
+    func refreshLocalFolder() async {
+        guard let localFolderLibrary, folderName != nil else { return }
+        do { folderBooks = try await localFolderLibrary.refresh(); folderProblem = nil }
+        catch { folderProblem = "The selected folder is unavailable. Select it again to reconnect." }
+    }
+    func openFolderBook(_ entry: FolderBookEntry) async {
+        await loadOnDeviceLibrary()
+        guard let localFolderLibrary, let onDeviceLibrary else { return }
+        if (!entry.available || folderProblem != nil), let copy = onDeviceBooks.first(where: { $0.id == entry.id }) {
+            openOnDevice(copy); return
+        }
+        guard let token = offlineReservations.beginLocalImport() else { error = "Wait for the current import or removal to finish."; return }
+        let current = generation
+        do {
+            let imported = try await localFolderLibrary.importBook(entry, into: onDeviceLibrary)
+            onDeviceBooks = await onDeviceLibrary.catalog()
+            folderBooks = await localFolderLibrary.books
+            offlineReservations.endLocalImport(token)
+            guard current == generation else { return }
+            openOnDevice(imported)
+        } catch {
+            offlineReservations.endLocalImport(token)
+            if current == generation { self.error = UserFacingError.message(error) }
+        }
+    }
+    func refreshStorageUsage() async {
+        let current = generation, request = UUID()
+        storageRequestID = request
+        do { if onDeviceLibrary == nil { onDeviceLibrary = try LocalLibrary() } }
+        catch { if current == generation { self.error = "Could not calculate storage use." }; return }
+        let library = onDeviceLibrary, currentSaved = savedBooks, currentCache = cache
+        let importedBytes = try? await library?.storageBytes()
+        let savedBytes = try? await currentSaved?.storageBytes()
+        let cacheBytes = try? await currentCache?.storageBytes()
+        guard current == generation, request == storageRequestID else { return }
+        storageUsage = StorageUsageSnapshot(importedBytes: importedBytes, savedBytes: savedBytes, cacheBytes: cacheBytes)
+    }
+    func clearDeviceCache() async {
+        guard openingID == nil, let currentCache = cache else { return }
+        let current = generation
+        do {
+            try await currentCache.clear()
+            guard current == generation else { return }
+            await refreshCache()
+            guard current == generation else { return }
+            await refreshStorageUsage()
+        } catch { if current == generation { self.error = "The cache could not be cleared." } }
+    }
+    func importOnDevice(_ url: URL) async {
+        guard let token = offlineReservations.beginLocalImport() else { error = "Wait for the current import or removal to finish."; return }
+        defer { offlineReservations.endLocalImport(token) }
+        await loadOnDeviceLibrary()
+        guard let onDeviceLibrary else { return }
+        do {
+            _ = try await onDeviceLibrary.importFile(url)
+            onDeviceBooks = await onDeviceLibrary.catalog()
+        } catch { self.error = UserFacingError.message(error) }
+    }
+    func removeOnDevice(_ entry: LocalBookEntry) async {
+        guard reader?.id != entry.id, openingID != entry.id else {
+            error = "Close this book before removing it from this device."
+            return
+        }
+        guard let token = offlineReservations.beginRemoval(entry.id, scope: .local) else { error = "Wait for the current import or removal to finish."; return }
+        defer { offlineReservations.endRemoval(entry.id, scope: .local, token: token) }
+        do {
+            try await onDeviceLibrary?.remove(entry)
+            onDeviceBooks = await onDeviceLibrary?.catalog() ?? []
+        } catch { self.error = UserFacingError.message(error) }
+    }
+    func openOnDevice(_ entry: LocalBookEntry) {
+        guard openingID == nil, markingID == nil else { return }
+        guard offlineReservations.permitsAccess(entry.id, scope: .local) else { error = "Wait for this book to finish being removed."; return }
+        let book = entry.book
+        cancelOpen(); readingOnDevice = true; error = nil; openingID = book.id; readerLaunchBook = book
+        let current = generation
+        openTask = Task {
+            do {
+                await loadOnDeviceLibrary()
+                guard let onDeviceLibrary, let onDeviceReadingStore,
+                      let directory = await onDeviceLibrary.directory(for: entry) else {
+                    throw ReaderError.message("The local copy is missing or damaged. Remove it from On My Device, then import the original file again. Your reading data will be kept.")
+                }
+                let content = try BookCache.contents(directory, format: book.format)
+                try Task.checkCancellation()
+                guard generation == current, readerLaunchBook?.id == book.id else { return }
+                reader = PreparedBook(book: book, directory: directory, document: content.0, images: content.1,
+                                      position: onDeviceReadingStore.records[book.id]?.position ?? ReadingPosition(), hasDurableSidecars: true)
+            } catch { if generation == current, !Task.isCancelled { self.error = UserFacingError.message(error) } }
+            if generation == current, !Task.isCancelled { openingID = nil }
+        }
+    }
     private(set) var cachedKeys: Set<String> = []
+    private(set) var savedKeys: Set<String> = []
     private(set) var markingID: String?
     private var cacheRefreshID = UUID()
     func isCached(_ book: Book) -> Bool { cachedKeys.contains(stableKey(book.id)) }
+    func isSaved(_ book: Book) -> Bool { savedKeys.contains(stableKey(book.id)) }
+    func hasSavedCopy(_ book: Book) -> Bool { savedCatalog.contains(where: { $0.id == book.id }) }
     func refreshCache() async {
         let current = generation, request = UUID()
+        let currentSavedBooks = savedBooks, currentJournal = downloadJournal
         cacheRefreshID = request
         let keys = (try? await cache?.availableKeys()) ?? []
-        if current == generation, request == cacheRefreshID { cachedKeys = keys }
+        let saved = (try? await currentSavedBooks?.availableKeys()) ?? []
+        let catalog = try? await currentSavedBooks?.catalog()
+        if current == generation, request == cacheRefreshID {
+            cachedKeys = keys; savedKeys = saved
+            if let catalog { savedCatalog = catalog }
+            if let journal = currentJournal, let currentSavedBooks {
+                do {
+                    try await journal.reconcileAvailable(isAvailable: { book in await currentSavedBooks.saved(book) != nil },
+                                                         stillCurrent: { self.generation == current && self.cacheRefreshID == request })
+                    guard current == generation, request == cacheRefreshID else { return }
+                    downloads = journal.entries
+                } catch { self.error = "Could not update the download queue." }
+            }
+        }
     }
     func removeDeviceCopy(_ book: Book) async {
-        guard openingID == nil, reader?.id != book.id else { error = "Close the book or wait for the download before removing its device copy."; return }
+        guard openingID == nil, reader?.id != book.id, activeDownloadID != book.id,
+              !downloads.contains(where: { $0.id == book.id && $0.state == .queued }) else { error = "Close the book or cancel its download before removing its device copy."; return }
+        guard let token = offlineReservations.beginRemoval(book.id, scope: .server) else { error = "This device copy is already being removed."; return }
+        defer { offlineReservations.endRemoval(book.id, scope: .server, token: token) }
         let current = generation
-        do { try await cache?.remove(book); await refreshCache() }
+        let currentSavedBooks = savedBooks, currentCache = cache, currentJournal = downloadJournal
+        do {
+            let completed = try await removeAccountDeviceCopy(stillCurrent: { self.generation == current },
+                                                             removeSaved: { try await currentSavedBooks?.remove(book) },
+                                                             removeCached: { try await currentCache?.remove(book) },
+                                                             removeJournal: { try currentJournal?.remove(book.id) })
+            guard completed, current == generation else { return }
+            downloads = currentJournal?.entries ?? []
+            await refreshCache()
+        }
         catch { if current == generation { self.error = UserFacingError.message(error) } }
     }
     func markFinished(_ book: Book, finished: Bool = true) async {
@@ -110,28 +282,73 @@ import Observation
         } catch { if current == generation { self.error = UserFacingError.message(error) } }
     }
     func downloadToDevice(_ book: Book) {
-        guard reader == nil, openingID == nil, markingID == nil, book.format != .unsupported else { return }
-        openingID = book.id
+        guard offlineReservations.permitsAccess(book.id, scope: .server) else { error = "Wait for this device copy to finish being removed."; return }
+        guard account != nil, let journal = downloadJournal else { error = "The download queue is unavailable."; return }
+        do { try journal.enqueue(book); downloads = journal.entries; resumeDownloads() }
+        catch { self.error = UserFacingError.message(error) }
+    }
+    func download(for book: Book) -> OfflineDownload? { downloads.first { $0.id == book.id } }
+    func cancelDownload(_ id: String) {
+        guard let journal = downloadJournal, let entry = downloads.first(where: { $0.id == id }),
+              entry.state == .queued || entry.state == .downloading else { return }
+        do {
+            try journal.set(id, state: .cancelled); downloads = journal.entries
+            if activeDownloadID == id { downloadTask?.cancel() }
+        } catch { self.error = "Could not update the download queue." }
+    }
+    func retryDownload(_ entry: OfflineDownload) { downloadToDevice(entry.book) }
+    private func resumeDownloads() {
+        guard downloadTask == nil, let provider, let savedBooks, let journal = downloadJournal,
+              let next = journal.entries.first(where: { $0.state == .queued }) else { return }
         let current = generation
-        openTask = Task {
-            guard let provider, let cache else { openingID = nil; return }
+        do { try journal.set(next.id, state: .downloading, progress: 0); downloads = journal.entries }
+        catch { self.error = "Could not update the download queue."; return }
+        activeDownloadID = next.id
+        let token = UUID(); activeDownloadToken = token
+        downloadTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                if await cache.cached(book) == nil {
-                    downloadProgress = 0
-                    let file = try await provider.download(book) { [weak self] value in
-                        Task { @MainActor in if self?.generation == current, self?.openingID == book.id { self?.downloadProgress = value } }
+                if await savedBooks.saved(next.book) == nil {
+                    let file = try await provider.download(next.book) { [weak self] value in
+                        Task { @MainActor in self?.recordDownloadProgress(value, id: next.id, token: token, generation: current) }
                     }
                     defer { try? FileManager.default.removeItem(at: file) }
                     try Task.checkCancellation()
-                    guard generation == current else { return }
-                    _ = try await cache.install(file, book: book, protectInstalled: false)
+                    guard self.generation == current, journal.entries.first(where: { $0.id == next.id })?.state == .downloading else { throw CancellationError() }
+                    let cover = try? await provider.cover(next.book, fullSize: false)
+                    try Task.checkCancellation()
+                    guard self.generation == current, journal.entries.first(where: { $0.id == next.id })?.state == .downloading else { throw CancellationError() }
+                    _ = try await savedBooks.install(file, book: next.book, cover: cover)
                 }
-                guard generation == current, !Task.isCancelled else { return }
-                try await cache.evict()
-                await refreshCache()
-            } catch { if current == generation, !Task.isCancelled { self.error = UserFacingError.message(error) } }
-            if current == generation, !Task.isCancelled { openingID = nil; downloadProgress = nil }
+                guard self.generation == current else { return }
+                try journal.set(next.id, state: .available, progress: 1)
+            } catch {
+                guard self.generation == current else { return }
+                // Installation may have finished just before cancellation. Report
+                // the real durable copy, rather than claiming it is incomplete.
+                let saved = await savedBooks.saved(next.book) != nil
+                guard self.generation == current else { return }
+                do {
+                    if saved { try journal.set(next.id, state: .available, progress: 1) }
+                    else if journal.entries.first(where: { $0.id == next.id })?.state == .downloading {
+                        try journal.set(next.id, state: error is CancellationError || Task.isCancelled ? .cancelled : .failed,
+                                        failure: error is CancellationError || Task.isCancelled ? nil : UserFacingError.message(error))
+                    }
+                } catch { self.error = "Could not update the download queue." }
+            }
+            guard self.generation == current else { return }
+            self.downloads = journal.entries; self.activeDownloadID = nil; self.activeDownloadToken = nil; self.downloadTask = nil
+            await self.refreshCache()
+            guard self.generation == current else { return }
+            self.resumeDownloads()
         }
+    }
+    private func recordDownloadProgress(_ progress: Double, id: String, token: UUID, generation current: UUID) {
+        guard generation == current, let journal = downloadJournal, activeDownloadID == id, activeDownloadToken == token,
+              let item = journal.entries.first(where: { $0.id == id }), item.state == .downloading,
+              progress.isFinite, progress >= (item.progress ?? 0) + 0.02 else { return }
+        do { try journal.set(id, state: .downloading, progress: progress); downloads = journal.entries }
+        catch { self.error = "Could not update download progress on this device."; downloadTask?.cancel() }
     }
     var preferences = ReaderPreferences() { didSet { if let data = try? JSONEncoder().encode(preferences) { UserDefaults.standard.set(data, forKey: "readerPreferences") } } }
     private var openTask: Task<Void, Never>?
@@ -154,12 +371,17 @@ import Observation
     private func configure(_ account: Account) throws {
         let store = try ReadingStore(namespace: account.namespace)
         let cache = try BookCache(namespace: account.namespace)
-        self.store = store; self.cache = cache; self.account = account; provider = JellyfinProvider(account: account)
+        let savedBooks = try DurableBookStore(namespace: account.namespace)
+        self.store = store; self.cache = cache; self.savedBooks = savedBooks; self.account = account; provider = JellyfinProvider(account: account)
+        do { downloadJournal = try OfflineDownloadJournal(namespace: account.namespace); downloads = downloadJournal?.entries ?? [] }
+        catch { downloadJournal = nil; downloads = []; self.error = "The download queue could not be opened on this device." }
         selectedLibrary = UserDefaults.standard.string(forKey: "library-\(stableKey(account.namespace))")
+        resumeDownloads()
     }
     #if DEBUG
     func openSample(_ format: BookFormat) async {
         guard account == nil, let source = Bundle.main.url(forResource: "Harbor", withExtension: format.rawValue, subdirectory: "Fixtures") else { return }
+        readingOnDevice = false
         do {
             store = try ReadingStore(namespace: "local-fixtures")
             let cache = try BookCache(namespace: "local-fixtures"); self.cache = cache
@@ -221,11 +443,12 @@ import Observation
     func signOut() async {
         guard !connecting else { return }
         connecting = true
-        cancelOpen(); syncTask?.cancel(); syncFlight?.cancel(); generation = UUID(); syncFlight = nil; syncRunning = false
-        let oldProvider = provider, oldCache = cache, oldStore = store, oldAccount = account
+        cancelOpen(); syncTask?.cancel(); syncFlight?.cancel(); downloadTask?.cancel()
+        generation = UUID(); offlineReservations.clearServer(); syncFlight = nil; syncRunning = false; downloadTask = nil; activeDownloadID = nil; activeDownloadToken = nil
+        let oldProvider = provider, oldCache = cache, oldSavedBooks = savedBooks, oldJournal = downloadJournal, oldStore = store, oldAccount = account
         // Release account-bound UI immediately, even if one cleanup operation fails.
-        account = nil; provider = nil; store = nil; cache = nil; libraries = []
-        cachedKeys = []; markingID = nil; librariesLoaded = false; librariesLoading = false
+        account = nil; provider = nil; store = nil; cache = nil; savedBooks = nil; downloadJournal = nil; downloads = []; libraries = []
+        cachedKeys = []; savedKeys = []; savedCatalog = []; storageUsage = nil; markingID = nil; librariesLoaded = false; librariesLoading = false
         profileImageTask?.cancel(); profileImageTask = nil; profileImageData = nil
         catalogSnapshots.removeAll(); discoveryBooks.removeAll(); discoveryCollections.removeAll(); localBooks.removeAll(); artwork.removeAllObjects()
         selectedLibrary = nil; reader = nil; conflict = nil; syncIssue = nil; status = nil; error = nil
@@ -234,16 +457,44 @@ import Observation
         do { try deleteCredentials() } catch { failures.append("The saved login could not be removed from Keychain.") }
         do { try oldStore?.delete() } catch { failures.append("Some reading data could not be removed from this device.") }
         do { try await oldCache?.delete() } catch { failures.append("Some cached books could not be removed from this device.") }
+        do { try await oldSavedBooks?.delete() } catch { failures.append("Some saved books could not be removed from this device.") }
+        do { try oldJournal?.delete() } catch { failures.append("The download queue could not be removed from this device.") }
         if let oldAccount { UserDefaults.standard.removeObject(forKey: "library-\(stableKey(oldAccount.namespace))") }
         do { try await oldProvider?.signOut() } catch { failures.append("The server session could not be revoked. You can revoke it from your Jellyfin server.") }
         connecting = false
         if !failures.isEmpty { error = failures.joined(separator: " ") }
     }
     func cancelOpen() { openTask?.cancel(); openTask = nil; openingID = nil; downloadProgress = nil; readerLaunchBook = nil }
+    /// Explicit offline-library opens do not wait on a server lookup.
+    func openSaved(_ book: Book) {
+        guard markingID == nil, let savedBooks else { return }
+        guard offlineReservations.permitsAccess(book.id, scope: .server) else { error = "Wait for this device copy to finish being removed."; return }
+        cancelOpen(); readingOnDevice = false; error = nil; openingID = book.id; readerLaunchBook = book
+        let current = generation
+        openTask = Task {
+            do {
+                guard let directory = await savedBooks.saved(book) else {
+                    throw ReaderError.message("The saved copy is missing or damaged. Remove the device copy, then save the book again when the server is available.")
+                }
+                let content = try BookCache.contents(directory, format: book.format)
+                if book.format == .pdf {
+                    guard let document = PDFDocument(url: content.0), !document.isLocked, document.pageCount > 0 else {
+                        throw ReaderError.message("The saved PDF is missing, damaged, or locked. Remove the device copy, then save it again when the server is available.")
+                    }
+                }
+                try Task.checkCancellation()
+                guard current == generation, readerLaunchBook?.id == book.id else { return }
+                let position = store?.records[book.id]?.position ?? ReadingPosition.from(ticks: book.ticks, format: book.format)
+                reader = PreparedBook(book: book, directory: directory, document: content.0, images: content.1, position: position, hasDurableSidecars: true)
+            } catch { if current == generation, !Task.isCancelled { self.error = UserFacingError.message(error) } }
+            if current == generation, !Task.isCancelled { openingID = nil }
+        }
+    }
     func open(_ book: Book) {
         guard markingID == nil else { return }
+        guard offlineReservations.permitsAccess(book.id, scope: .server) else { error = "Wait for this device copy to finish being removed."; return }
         guard book.format != .unsupported else { error = "This format is not supported. Choose an EPUB, PDF, or CBZ book."; return }
-        cancelOpen(); error = nil; openingID = book.id; readerLaunchBook = book
+        cancelOpen(); readingOnDevice = false; error = nil; openingID = book.id; readerLaunchBook = book
         let current = generation
         openTask = Task { [weak self] in
             guard let self, let provider = self.provider, let cache = self.cache else { return }
@@ -282,6 +533,7 @@ import Observation
     }
     func resolveConflict(useLocal: Bool) {
         guard let conflict, let provider, let cache else { return }
+        readingOnDevice = false
         self.conflict = nil
         let position = useLocal ? conflict.local : conflict.remote
         do { try store?.set(ReadingRecord(position: position, acknowledgedTicks: conflict.remoteTicks, dirty: useLocal, updated: Date(), title: conflict.book.title, format: conflict.book.format), id: conflict.book.id) } catch { self.error = UserFacingError.message(error); return }
@@ -296,7 +548,9 @@ import Observation
     private func prepare(_ book: Book, position: ReadingPosition, provider: JellyfinProvider, cache: BookCache, generation current: UUID) async throws {
         await cache.protect(book.id)
         let directory: URL
-        if let cached = await cache.cached(book) { directory = cached }
+        let hasDurableSidecars: Bool
+        if let saved = await savedBooks?.saved(book) { directory = saved; hasDurableSidecars = true }
+        else if let cached = await cache.cached(book) { directory = cached; hasDurableSidecars = false }
         else {
             downloadProgress = 0
             let file = try await provider.download(book) { [weak self] value in Task { @MainActor in if self?.generation == current, self?.openingID == book.id { self?.downloadProgress = value } } }
@@ -304,22 +558,24 @@ import Observation
             try Task.checkCancellation()
             guard current == generation else { throw CancellationError() }
             directory = try await cache.install(file, book: book)
+            hasDurableSidecars = false
         }
         let content = try BookCache.contents(directory, format: book.format)
         try Task.checkCancellation()
         guard current == generation else { return }
         await refreshCache()
         guard current == generation, !Task.isCancelled, readerLaunchBook?.id == book.id else { return }
-        reader = PreparedBook(book: book, directory: directory, document: content.0, images: content.1, position: position)
+        reader = PreparedBook(book: book, directory: directory, document: content.0, images: content.1, position: position, hasDurableSidecars: hasDurableSidecars)
     }
     func savePosition(_ position: ReadingPosition, book: Book) {
-        guard let store else { return }
+        guard let store = readingStore(for: book) else { return }
         let previous = store.records[book.id]
         if previous?.position == position { return }
         let acknowledged = previous?.acknowledgedTicks ?? book.ticks
-        let dirty = position.ticks(for: book.format) != acknowledged || (syncRunning && previous?.dirty == true)
+        let dirty = readingOnDevice ? false : (position.ticks(for: book.format) != acknowledged || (syncRunning && previous?.dirty == true))
         do { try store.set(ReadingRecord(position: position, acknowledgedTicks: acknowledged, dirty: dirty, updated: Date(), title: book.title, format: book.format, syncBlock: previous?.syncBlock), id: book.id) }
         catch { self.error = "Could not save your reading position on this device."; return }
+        if readingOnDevice { return }
         var updated = book; updated.ticks = position.ticks(for: book.format)
         updated.readingStatus = book.format == .epub && position.fraction >= 1 ? .finished : (updated.ticks > 0 ? .inProgress : .notFinished)
         localBooks[book.id] = updated
@@ -434,12 +690,17 @@ import Observation
     @discardableResult func addBookmark(book: Book, position: ReadingPosition) -> Bool {
         let name = book.format == .epub ? "\(Int(position.fraction * 100))% · \(Date().formatted(date: .abbreviated, time: .shortened))" : "Page \(position.page + 1)"
         do {
-            guard let store else { return false }
+            guard let store = readingStore(for: book) else { return false }
             let added = try store.addIfAbsent(Bookmark(name: name, position: position), id: book.id, format: book.format)
             if added { bookmarksRevision += 1 }
             return added
         } catch { self.error = UserFacingError.message(error); return false }
     }
+}
+struct StorageUsageSnapshot {
+    var importedBytes: Int64?
+    var savedBytes: Int64?
+    var cacheBytes: Int64?
 }
 struct ProgressConflict: Identifiable { var id: String { book.id }; var book: Book; var local: ReadingPosition; var remote: ReadingPosition; var remoteTicks: Int64; var serverFinished = false }
 struct BlockedProgress: Identifiable {

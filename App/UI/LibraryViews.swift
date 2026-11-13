@@ -11,6 +11,10 @@ struct LoginView: View {
                 Image(systemName: "books.vertical.fill").font(.system(size: 52)).foregroundStyle(.tint).accessibilityHidden(true)
                 Text("Your library.\nYour next chapter.").font(.largeTitle.bold())
                 Text("Connect to your Jellyfin 12 server to read your books.").foregroundStyle(.secondary)
+                #if os(macOS)
+                Text("After upgrading from an earlier Mac build, connect once to restore access to your saved library and reading data.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                #endif
                 VStack(spacing: 16) {
                     TextField("https://your-server.example", text: $server).textContentType(.URL)
                     Text("Enter your Jellyfin HTTPS address, including any base path.").font(.caption).foregroundStyle(.secondary)
@@ -22,6 +26,7 @@ struct LoginView: View {
                     Task { await model.login(server: server, username: username, password: secret) }
                 } label: { HStack { if model.connecting { ProgressView().controlSize(.small) }; Text(model.connecting ? "Connecting…" : "Connect").frame(maxWidth: .infinity) } }
                 .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.connecting || server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                NavigationLink("Read Books On My Device") { OnDeviceLibraryView() }
                 #if DEBUG
                 Menu("Preview a Sample Book") { ForEach([BookFormat.epub, .pdf, .cbz], id: \.self) { format in Button(format.rawValue.uppercased()) { Task { await model.openSample(format) } } } }
                 #endif
@@ -42,6 +47,23 @@ struct SearchView: View {
     }
 }
 
+enum CatalogViewLayout: String, CaseIterable, Identifiable {
+    case list, cards, gallery
+    var id: Self { self }
+    var title: String {
+        switch self { case .list: "List"; case .cards: "Cards"; case .gallery: "Gallery" }
+    }
+    var symbol: String {
+        switch self { case .list: "list.bullet"; case .cards: "square.grid.2x2"; case .gallery: "rectangle.grid.1x2" }
+    }
+}
+enum CatalogCoverSize: String, CaseIterable, Identifiable {
+    case small, medium, large
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
+    var scale: CGFloat { switch self { case .small: 0.8; case .medium: 1; case .large: 1.2 } }
+}
+
 struct CatalogView: View {
     @Environment(AppModel.self) private var model
     var parent: Library? = nil
@@ -52,7 +74,10 @@ struct CatalogView: View {
         self._filters = State(initialValue: initialFilters)
         self._sort = State(initialValue: initialSort)
     }
-    @AppStorage("catalogListLayout") private var listLayout = false
+    @AppStorage("catalogListLayout") private var legacyListLayout = false
+    @AppStorage("catalogViewLayout") private var storedLayout = ""
+    @AppStorage("catalogSearchLayout") private var storedSearchLayout = CatalogViewLayout.list.rawValue
+    @AppStorage("catalogCoverSize") private var storedCoverSize = CatalogCoverSize.medium.rawValue
     @State private var similarBooks: [Book] = []
     @State private var suggestedBooks: [Book] = []
     @State private var recentBooks: [Book] = []
@@ -93,6 +118,18 @@ struct CatalogView: View {
     @State private var pageTask: Task<Void, Never>?
     private var query: String { (searchQuery ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
     private var isSearch: Bool { searchQuery != nil }
+    private var selectedLayout: CatalogViewLayout {
+        if isSearch { return CatalogViewLayout(rawValue: storedSearchLayout) ?? .list }
+        return CatalogViewLayout(rawValue: storedLayout) ?? (legacyListLayout ? .list : .cards)
+    }
+    private var layoutSelection: Binding<CatalogViewLayout> {
+        Binding(get: { selectedLayout }, set: { value in
+            if isSearch { storedSearchLayout = value.rawValue } else { storedLayout = value.rawValue }
+        })
+    }
+    private var coverSizeSelection: Binding<CatalogCoverSize> {
+        Binding(get: { CatalogCoverSize(rawValue: storedCoverSize) ?? .medium }, set: { storedCoverSize = $0.rawValue })
+    }
     private var selectedID: String? { resume ? nil : (isSearch ? searchLibrary : model.selectedLibrary) }
     private var scope: CatalogScope {
         CatalogPresentation.scope(libraries: model.libraries, selectedID: selectedID, folderID: parent?.id, search: isSearch)
@@ -102,7 +139,16 @@ struct CatalogView: View {
     private var requestKey: String { "\(model.sessionID)|\(model.catalogRevision)|\(request)|\(resume)|\(revision)" }
     private var suggestionKey: String { "\(model.sessionID)|\(model.catalogRevision)|\(suggestionRevision)" }
     private var homeDiscoveryKey: String { "\(model.sessionID)|\(model.catalogRevision)|\(model.selectedLibrary ?? "")|\(suggestionRevision)" }
-    private let homeColumns = [GridItem(.flexible(), spacing: 14, alignment: .top), GridItem(.flexible(), spacing: 14, alignment: .top)]
+    @ScaledMetric(relativeTo: .body) private var minimumCardWidth = 140.0
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private var homeColumns: [GridItem] {
+        let width = minimumCardWidth * coverSizeSelection.wrappedValue.scale
+        return [GridItem(dynamicTypeSize.isAccessibilitySize ? .flexible() : .adaptive(minimum: width, maximum: width * 1.5), spacing: 14, alignment: .top)]
+    }
+    private var galleryColumns: [GridItem] {
+        let width = 210 * coverSizeSelection.wrappedValue.scale
+        return [GridItem(dynamicTypeSize.isAccessibilitySize ? .flexible() : .adaptive(minimum: width, maximum: width * 1.5), spacing: 20, alignment: .top)]
+    }
     private var homeCollectionScope: CatalogScope {
         CatalogPresentation.scope(libraries: model.libraries, selectedID: model.selectedLibrary ?? model.libraries.first?.id, folderID: nil, search: false)
     }
@@ -110,11 +156,13 @@ struct CatalogView: View {
         @Bindable var model = model
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                if !resume { activeFilters }
+                if !resume && !filters.isEmpty { activeFilters }
                 if let status = model.status { Label(status, systemImage: "info.circle").foregroundStyle(.secondary) }
                 if resume { Text("Continue Reading").font(.headline) }
                 if !canLoad {
                     ContentUnavailableView("Find your next book", systemImage: "magnifyingglass", description: Text("Search book titles across your libraries. Use Filters to find an author."))
+                        .frame(maxWidth: .infinity)
+                        .containerRelativeFrame(.vertical) { length, _ in max(0, length - 48) }
                 } else if let failure, books.isEmpty {
                     ContentUnavailableView { Label(expired ? "Session expired" : "Couldn’t load books", systemImage: expired ? "person.crop.circle.badge.exclamationmark" : "wifi.exclamationmark") } description: { Text(failure) } actions: { Button("Try Again") { model.catalogSnapshots.removeValue(forKey: snapshotKey); revision = UUID() } }
                 } else if books.isEmpty && !loading {
@@ -135,7 +183,7 @@ struct CatalogView: View {
                             }
                         }
                     }
-                } else if isSearch || listLayout {
+                } else if selectedLayout == .list {
                     LazyVStack(spacing: 0) {
                         ForEach(books) { book in
                             NavigationLink { if book.isFolder { CatalogView(parent: Library(id: book.id, name: book.title)) } else { BookDetailView(book: book) } } label: { SearchBookRow(book: book) }.buttonStyle(.plain).modifier(BookActions(book: book))
@@ -143,9 +191,12 @@ struct CatalogView: View {
                         }
                     }
                 } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 90, maximum: 120), spacing: 20, alignment: .top)], alignment: .leading, spacing: 24) {
+                    LazyVGrid(columns: selectedLayout == .gallery ? galleryColumns : homeColumns, alignment: .leading, spacing: 24) {
                         ForEach(books) { book in
-                            NavigationLink { if book.isFolder { CatalogView(parent: Library(id: book.id, name: book.title)) } else { BookDetailView(book: book) } } label: { BookCard(book: book) }.buttonStyle(.plain).modifier(BookActions(book: book))
+                            NavigationLink { if book.isFolder { CatalogView(parent: Library(id: book.id, name: book.title)) } else { BookDetailView(book: book) } } label: {
+                                if selectedLayout == .cards { CatalogBookCard(book: book) }
+                                else { BookCard(book: book) }
+                            }.buttonStyle(.plain).modifier(BookActions(book: book))
                         }
                     }
                 }
@@ -274,7 +325,8 @@ struct CatalogView: View {
                 model.discoveryBooks[discoveryCacheKey] = recentBooks; model.discoveryCollections[discoveryCacheKey] = homeCollections
             } catch { if key == homeDiscoveryKey, !Task.isCancelled { homeDiscoveryFailure = true } }
         }
-        .navigationTitle(parent?.name ?? (isSearch ? "Search" : resume ? "Home" : "Library"))
+        .appSurface().navigationTitle(parent?.name ?? (isSearch ? "Search" : resume ? "Home" : "Library"))
+        .profileToolbar()
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -298,19 +350,28 @@ struct CatalogView: View {
                     .help(isSearch && searchLibrary == nil ? "All book libraries" : scope.libraries.first?.name ?? "Choose library")
                 }
             }
-            if !resume && !isSearch {
+            if !resume {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        Picker("View", selection: $listLayout) {
-                            Label("Covers", systemImage: "square.grid.2x2").tag(false)
-                            Label("List", systemImage: "list.bullet").tag(true)
+                        Picker("View", selection: layoutSelection) {
+                            ForEach(CatalogViewLayout.allCases) { layout in
+                                Label(layout.title, systemImage: layout.symbol).tag(layout)
+                            }
+                        }.pickerStyle(.inline)
+                        if selectedLayout != .list {
+                            Divider()
+                            Picker("Cover size", selection: coverSizeSelection) {
+                                ForEach(CatalogCoverSize.allCases) { size in Text(size.title).tag(size) }
+                            }.pickerStyle(.inline)
                         }
-                    } label: { Label("View options", systemImage: listLayout ? "list.bullet" : "square.grid.2x2") }
+                    } label: { Label("View options", systemImage: selectedLayout.symbol) }
+                    .accessibilityValue(selectedLayout.title).help("View: \(selectedLayout.title)")
                 }
             }
             if !resume {
                 ToolbarItem(placement: .primaryAction) {
                     Button { showingFilters = true } label: { Label("Filters", systemImage: filters.isEmpty ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill") }
+                        .accessibilityValue(filters.isEmpty ? "No filters" : "Filters active")
                         .popover(isPresented: $showingFilters) {
                             CatalogFilterEditor(scope: scope, selection: filters) { filters = $0; showingFilters = false }
                                 .environment(model)
@@ -318,10 +379,10 @@ struct CatalogView: View {
                         }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Menu { Picker("Sort books", selection: $sort) { ForEach(CatalogSort.allCases, id: \.self) { Text($0.rawValue).tag($0) } } } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }
+                    Menu { Picker("Sort books", selection: $sort) { ForEach(CatalogSort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.inline) } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }
+                        .accessibilityValue(sort.rawValue).help("Sort: \(sort.rawValue)")
                 }
             }
-            ToolbarItem(placement: .primaryAction) { ProfileButton() }
         }
         .refreshable { await model.loadLibraries(); revision = UUID() }
         .task(id: requestKey) {
@@ -344,16 +405,23 @@ struct CatalogView: View {
         .onDisappear { pageTask?.cancel(); loading = false }
     }
     private var activeFilters: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack { filterChips }
-            VStack(alignment: .leading) { filterChips }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Active filters").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear all") { filters = CatalogFilters() }.font(.caption)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack { filterChips }
+                VStack(alignment: .leading, spacing: 6) { filterChips }
+            }
         }
     }
     @ViewBuilder private var filterChips: some View {
-        if let author = filters.author { chip(author.name) { filters.author = nil } }
-        if let genre = filters.genre { chip(genre.name) { filters.genre = nil } }
-        if let tag = filters.tag { chip(tag.name) { filters.tag = nil } }
-        if let status = filters.status { chip(status.rawValue) { filters.status = nil } }
+        if let author = filters.author { chip("Author: \(author.name)") { filters.author = nil } }
+        if let genre = filters.genre { chip("Genre: \(genre.name)") { filters.genre = nil } }
+        if let tag = filters.tag { chip("Tag: \(tag.name)") { filters.tag = nil } }
+        if let status = filters.status { chip("Status: \(status.rawValue)") { filters.status = nil } }
     }
     private func chip(_ title: String, remove: @escaping () -> Void) -> some View {
         Button(action: remove) { Label(title, systemImage: "xmark.circle.fill").font(.caption) }.buttonStyle(.bordered).accessibilityLabel("Remove filter: \(title)")
@@ -388,20 +456,34 @@ struct CatalogView: View {
 }
 
 struct SearchBookRow: View {
+    @ScaledMetric(relativeTo: .body) private var coverWidth = 52.0
     @Environment(AppModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var book: Book
     var body: some View {
-        HStack(spacing: 14) {
-            CoverView(book: book).frame(width: 52, height: 78)
+        HStack(alignment: .top, spacing: 14) {
+            CoverView(book: book).frame(width: coverWidth, height: coverWidth * 1.5)
             VStack(alignment: .leading, spacing: 5) {
-                Text(book.title).font(.headline).lineLimit(2)
-                if !book.author.isEmpty { Text(book.author).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
+                Text(book.title).font(.headline).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                if !book.author.isEmpty { Text(book.author).font(.subheadline).foregroundStyle(.secondary).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1) }
                 if let name = book.libraryName { Text(name).font(.caption).foregroundStyle(.secondary) }
-                if !book.isFolder { HStack { Text(model.displayedBook(book).readingStatus.rawValue); DeviceBookIndicator(book: book) }.font(.caption).foregroundStyle(.secondary) }
+                if !book.isFolder {
+                    Group {
+                        if dynamicTypeSize.isAccessibilitySize {
+                            VStack(alignment: .leading, spacing: 4) { readingMetadata }
+                        } else {
+                            HStack(spacing: 8) { readingMetadata }
+                        }
+                    }.font(.caption).foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-        }.padding(.vertical, 10).contentShape(Rectangle()).accessibilityElement(children: .combine)
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
+        }.padding(.vertical, 12).contentShape(Rectangle()).accessibilityElement(children: .combine)
+    }
+    @ViewBuilder private var readingMetadata: some View {
+        Text(model.displayedBook(book).readingStatus.rawValue)
+        DeviceBookIndicator(book: book)
     }
 }
 
@@ -414,14 +496,83 @@ struct CatalogFilterEditor: View {
     @State private var options: CatalogFilterOptions?
     @State private var failure: String?
     @State private var revision = UUID()
+    #if os(macOS)
+    private enum FilterPage { case author, genre, tag }
+    @State private var filterPage: FilterPage?
+    #endif
     var body: some View {
+        Group {
+        #if os(macOS)
+        VStack(spacing: 0) {
+            if let filterPage {
+                switch filterPage {
+                case .author:
+                    CatalogAuthorPicker(scope: scope, selection: $selection.author, onClose: { self.filterPage = nil })
+                case .genre:
+                    CatalogOptionPicker(title: "Genre", values: options?.genres ?? [], selection: $selection.genre, onClose: { self.filterPage = nil })
+                case .tag:
+                    CatalogOptionPicker(title: "Tag", values: options?.tags ?? [], selection: $selection.tag, onClose: { self.filterPage = nil })
+                }
+            } else {
+                HStack {
+                    Text("Filters").font(.headline)
+                    Spacer()
+                    Button("Cancel") { dismiss() }
+                }.padding(16)
+                Divider()
+                filterForm
+                Divider()
+                HStack {
+                    Button("Clear All") { selection = CatalogFilters() }.disabled(selection.isEmpty)
+                    Spacer()
+                    Button("Apply") { apply(selection) }.buttonStyle(.borderedProminent)
+                }.padding(16)
+            }
+        }
+        .frame(width: 440, height: filterPage == nil ? 320 : 480, alignment: .top)
+        #else
         NavigationStack {
-            Form {
+            filterForm
+            .appSurface().navigationTitle("Filters")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Apply") { apply(selection) } }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        #endif
+        }
+        .task(id: "\(scope)|\(model.sessionID)|\(model.catalogRevision)|\(revision)") {
+            options = nil; failure = nil
+            do {
+                let result = try await model.provider?.filterOptions(scope: scope)
+                guard !Task.isCancelled else { return }; options = result
+            } catch { if !Task.isCancelled { failure = UserFacingError.message(error) } }
+        }
+    }
+    private var filterForm: some View {
+        #if os(macOS)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) { filterFields }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        #else
+        Form { filterFields }
+        #endif
+    }
+    @ViewBuilder private var filterFields: some View {
                 if let options {
                     if options.authorsAvailable || selection.author != nil {
+                        #if os(macOS)
+                        Button { filterPage = .author } label: { filterRow("Author", value: selection.author?.name ?? "Any") }
+                            .buttonStyle(.plain)
+                        #else
                         NavigationLink { CatalogAuthorPicker(scope: scope, selection: $selection.author) } label: {
                             LabeledContent("Author", value: selection.author?.name ?? "Any")
                         }
+                        #endif
                     }
                     optionPicker("Genre", values: options.genres, selection: $selection.genre)
                     optionPicker("Tag", values: options.tags, selection: $selection.tag)
@@ -440,23 +591,22 @@ struct CatalogFilterEditor: View {
                     // Existing selections remain removable even when metadata is unavailable.
                     if !selection.isEmpty { selectedSummary }
                 } else { ProgressView("Finding available filters…") }
+                #if !os(macOS)
                 Button("Clear All") { selection = CatalogFilters() }.disabled(selection.isEmpty)
-            }
-            .navigationTitle("Filters")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Apply") { apply(selection) } }
-            }
-        }
-        .frame(idealWidth: 400, idealHeight: 440)
-        .task(id: "\(scope)|\(model.sessionID)|\(model.catalogRevision)|\(revision)") {
-            options = nil; failure = nil
-            do {
-                let result = try await model.provider?.filterOptions(scope: scope)
-                guard !Task.isCancelled else { return }; options = result
-            } catch { if !Task.isCancelled { failure = UserFacingError.message(error) } }
-        }
+                #endif
     }
+    #if os(macOS)
+    private func filterRow(_ title: String, value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+            Spacer(minLength: 12)
+            Text(value).foregroundStyle(.secondary).lineLimit(1)
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+    #endif
     @ViewBuilder private var selectedSummary: some View {
         if let value = selection.author { Button("Remove author: \(value.name)") { selection.author = nil } }
         if let value = selection.genre { Button("Remove genre: \(value.name)") { selection.genre = nil } }
@@ -465,11 +615,17 @@ struct CatalogFilterEditor: View {
     }
     @ViewBuilder private func optionPicker(_ title: String, values: [CatalogOption], selection: Binding<CatalogOption?>) -> some View {
         if !values.isEmpty || selection.wrappedValue != nil {
-            Picker(title, selection: selection) {
-                Text("Any").tag(CatalogOption?.none)
-                if let selected = selection.wrappedValue, !values.contains(selected) { Text(selected.name).tag(Optional(selected)) }
-                ForEach(values) { Text($0.name).tag(Optional($0)) }
+            #if os(macOS)
+            Button { filterPage = title == "Genre" ? .genre : .tag } label: {
+                filterRow(title, value: selection.wrappedValue?.name ?? "Any")
+            }.buttonStyle(.plain)
+            #else
+            NavigationLink {
+                CatalogOptionPicker(title: title, values: values, selection: selection)
+            } label: {
+                LabeledContent(title, value: selection.wrappedValue?.name ?? "Any")
             }
+            #endif
         }
     }
     private func statuses(_ options: CatalogFilterOptions) -> [CatalogReadingStatus] {
@@ -479,11 +635,61 @@ struct CatalogFilterEditor: View {
     }
 }
 
+private struct CatalogOptionPicker: View {
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    let values: [CatalogOption]
+    @Binding var selection: CatalogOption?
+    var onClose: (() -> Void)? = nil
+    @State private var query = ""
+    private var matches: [CatalogOption] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return term.isEmpty ? values : values.filter { $0.name.localizedCaseInsensitiveContains(term) }
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+        #if os(macOS)
+        HStack {
+            Button("Filters", systemImage: "chevron.left") { close() }
+            Spacer()
+            Text(title).font(.headline)
+            Spacer()
+        }.padding(16)
+        TextField("Find \(title.lowercased())", text: $query).textFieldStyle(.roundedBorder).padding(.horizontal, 16).padding(.bottom, 12)
+        Divider()
+        #endif
+        List {
+            Button("Any \(title.lowercased())") { selection = nil; close() }
+            if let selected = selection, !values.contains(where: { $0.id == selected.id }), query.isEmpty {
+                optionButton(selected)
+            }
+            ForEach(matches) { optionButton($0) }
+            if matches.isEmpty && !query.isEmpty { Text("No matching \(title.lowercased())").foregroundStyle(.secondary) }
+        }
+        #if !os(macOS)
+        .appSurface().navigationTitle(title)
+        .searchable(text: $query, prompt: "Find \(title.lowercased())")
+        #endif
+        }
+    }
+    private func close() { if let onClose { onClose() } else { dismiss() } }
+    private func optionButton(_ option: CatalogOption) -> some View {
+        Button { selection = option; close() } label: {
+            HStack {
+                Text(option.name)
+                Spacer()
+                if selection?.id == option.id { Image(systemName: "checkmark").accessibilityLabel("Selected") }
+            }
+        }
+    }
+}
+
 struct CatalogAuthorPicker: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     var scope: CatalogScope
     @Binding var selection: CatalogOption?
+    var onClose: (() -> Void)? = nil
     @State private var query = ""
     @State private var authors: [CatalogOption] = []
     @State private var offset = 0
@@ -494,8 +700,19 @@ struct CatalogAuthorPicker: View {
     @State private var generation = UUID()
     @State private var pageTask: Task<Void, Never>?
     var body: some View {
+        VStack(spacing: 0) {
+        #if os(macOS)
+        HStack {
+            Button("Filters", systemImage: "chevron.left") { close() }
+            Spacer()
+            Text("Author").font(.headline)
+            Spacer()
+        }.padding(16)
+        TextField("Find an author", text: $query).textFieldStyle(.roundedBorder).padding(.horizontal, 16).padding(.bottom, 12)
+        Divider()
+        #endif
         List {
-            Button("Any author") { selection = nil; dismiss() }
+            Button("Any author") { selection = nil; close() }
             if let selection, !authors.contains(selection) { authorButton(selection) }
             ForEach(authors) { authorButton($0) }
             if loading { ProgressView("Finding authors…") }
@@ -503,8 +720,11 @@ struct CatalogAuthorPicker: View {
             else if !loading && offset < total { Button("Load More Authors") { more() } }
             else if !loading && authors.isEmpty { Text("No matching authors").foregroundStyle(.secondary) }
         }
-        .navigationTitle("Author")
+        #if !os(macOS)
+        .appSurface().navigationTitle("Author")
         .searchable(text: $query, prompt: "Find an author")
+        #endif
+        }
         .task(id: "\(query)|\(scope)|\(model.sessionID)|\(revision)") {
             pageTask?.cancel(); let token = UUID(); generation = token
             authors = []; offset = 0; total = 0; failure = nil; loading = true
@@ -514,8 +734,9 @@ struct CatalogAuthorPicker: View {
         }
         .onDisappear { pageTask?.cancel(); generation = UUID() }
     }
+    private func close() { if let onClose { onClose() } else { dismiss() } }
     private func authorButton(_ author: CatalogOption) -> some View {
-        Button { selection = author; dismiss() } label: {
+        Button { selection = author; close() } label: {
             HStack { Text(author.name); Spacer(); if selection == author { Image(systemName: "checkmark").accessibilityLabel("Selected") } }
         }
     }
@@ -535,13 +756,12 @@ struct CatalogAuthorPicker: View {
 
 struct ProfileButton: View {
     @Environment(AppModel.self) private var model
+    var inSidebar = false
     @State private var showingSettings = false
     var body: some View {
-        Button { showingSettings = true } label: {
-            Group {
-                if let imageData = model.profileImageData, let image = platformImage(imageData) { image.resizable().scaledToFill() }
-                else { Image(systemName: "person.crop.circle.fill").resizable().scaledToFit().foregroundStyle(.secondary) }
-            }.frame(width: 30, height: 30).clipShape(Circle())
+        Group {
+            if inSidebar { profileButton.buttonStyle(.plain) }
+            else { profileButton }
         }
         .accessibilityLabel("Profile and Settings")
         .help("Profile and Settings")
@@ -549,20 +769,56 @@ struct ProfileButton: View {
             await model.loadProfileImage()
         }
         .sheet(isPresented: $showingSettings) {
+            #if os(macOS)
+            VStack(spacing: 0) {
+                NavigationStack { SettingsView().appSheetSurface() }
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Done") { showingSettings = false }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(16)
+                .background(AppAppearance.background(model.preferences.theme))
+            }
+            .background(AppAppearance.background(model.preferences.theme))
+            .frame(minWidth: 480, minHeight: 500)
+            #else
             NavigationStack {
                 SettingsView()
+                    .appSheetSurface()
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingSettings = false } } }
             }
-            #if os(macOS)
-            .frame(minWidth: 480, minHeight: 500)
             #endif
+        }
+    }
+    private var profileButton: some View {
+        Button { showingSettings = true } label: {
+            HStack(spacing: 10) {
+                Group {
+                    if let imageData = model.profileImageData, let image = platformImage(imageData) { image.resizable().scaledToFill() }
+                    else { Image(systemName: "person.crop.circle.fill").resizable().scaledToFit().foregroundStyle(.secondary) }
+                }.frame(width: 30, height: 30).clipShape(Circle())
+                if inSidebar {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.account?.username ?? "Profile").font(.body.weight(.medium)).lineLimit(1)
+                        Text("Profile & Settings").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "gearshape").foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, inSidebar ? 6 : 0)
+            .contentShape(Rectangle())
         }
     }
 }
 struct CoverView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var book: Book
     var fullSize = false
+    var ambientBackground = false
     @State private var data: Data?
     var body: some View {
         GeometryReader { geometry in
@@ -574,6 +830,16 @@ struct CoverView: View {
                     Image(systemName: book.isFolder ? "books.vertical.fill" : "book.closed").font(.largeTitle).foregroundStyle(.secondary)
                 }
             }.frame(width: geometry.size.width, height: geometry.size.height).clipShape(RoundedRectangle(cornerRadius: 8))
+                .background {
+                    if ambientBackground && !reduceTransparency,
+                       let data = data ?? model.cachedCoverImage(book, fullSize: fullSize) ?? model.cachedCoverImage(book),
+                       let image = platformImage(data) {
+                        image.resizable().scaledToFill()
+                            .frame(width: geometry.size.width * 1.45, height: geometry.size.height * 1.05)
+                            .clipped().blur(radius: 28).opacity(0.09)
+                            .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
         }.aspectRatio(2.0 / 3.0, contentMode: .fit)
         .task(id: "\(model.sessionID)|\(book.id)|\(book.imageTag ?? "")") {
             data = nil
@@ -597,13 +863,35 @@ struct BookCard: View {
     var coverWidth: CGFloat? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            CoverView(book: book).frame(maxWidth: coverWidth)
+            CoverView(book: book).frame(width: coverWidth).frame(maxWidth: .infinity)
                 .overlay(alignment: .bottomTrailing) {
                     if !book.isFolder { DeviceBookIndicator(book: book).labelStyle(.iconOnly).padding(5).background(.regularMaterial, in: Circle()).padding(5) }
                 }
-            Text(book.title).font(.headline).lineLimit(2)
-            Text(book.isFolder ? "Collection" : book.author.isEmpty ? book.format.rawValue.uppercased() : book.author).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        }.accessibilityElement(children: .combine)
+            Text(book.title).font(.headline).lineLimit(2, reservesSpace: true).truncationMode(.tail).accessibilityLabel(book.title)
+            Text(book.isFolder ? "Collection" : book.author.isEmpty ? book.format.rawValue.uppercased() : book.author).font(.caption).foregroundStyle(.secondary).lineLimit(1, reservesSpace: true)
+        }.frame(width: coverWidth, alignment: .leading)
+            .frame(maxWidth: coverWidth ?? .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+    }
+}
+/// Compact catalog tile with a contained cover; Gallery uses the larger
+/// cover-led BookCard so the two layouts remain meaningfully different.
+struct CatalogBookCard: View {
+    var book: Book
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            CoverView(book: book).frame(maxWidth: .infinity)
+                .overlay(alignment: .bottomTrailing) {
+                    if !book.isFolder { DeviceBookIndicator(book: book).labelStyle(.iconOnly).padding(5).background(.regularMaterial, in: Circle()).padding(5) }
+                }
+            Text(book.title).font(.headline).lineLimit(2, reservesSpace: true)
+            Text(book.isFolder ? "Collection" : book.author.isEmpty ? book.format.rawValue.uppercased() : book.author)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1, reservesSpace: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .combine)
     }
 }
 struct BookDetailView: View {
@@ -614,56 +902,44 @@ struct BookDetailView: View {
     @State private var confirmingRemoval = false
     @State private var overview = ""
     private var displayed: Book { model.displayedBook(detail ?? book) }
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var detailCoverWidth = 210.0
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                CoverView(book: displayed, fullSize: true).modifier(ReaderCoverSource(book: displayed)).frame(width: 170).frame(maxWidth: .infinity)
-                Text(displayed.title).font(.title2.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                if !displayed.authors.isEmpty {
-                    ForEach(displayed.authors, id: \.name) { author in
-                        HStack(spacing: 10) {
-                            ZStack {
-                                Circle().fill(.quaternary)
-                                if let data = authorImages[author.name], let image = platformImage(data) { image.resizable().scaledToFill() }
-                                else { Image(systemName: "person.fill").foregroundStyle(.secondary) }
-                            }.frame(width: 38, height: 38).clipShape(Circle()).accessibilityHidden(true)
-                            Text(author.name).font(.subheadline).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 32) {
+                if dynamicTypeSize.isAccessibilitySize {
+                    compactHeader
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 36) {
+                            detailCover
+                            VStack(alignment: .leading, spacing: 28) {
+                                detailMetadata(wide: true)
+                                detailOverview
+                            }.frame(width: 480, alignment: .leading)
                         }
+                        compactHeader
                     }
-                } else if !displayed.author.isEmpty { Text(displayed.author).font(.subheadline).foregroundStyle(.secondary) }
-                Text(displayed.format == .unsupported ? "Unsupported format" : displayed.format.rawValue.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                DeviceBookIndicator(book: book).font(.caption)
-                if model.openingID == book.id {
-                    ProgressView(value: model.downloadProgress).accessibilityLabel("Preparing book")
-                    Text(model.downloadProgress == nil ? "Checking reading position…" : "Preparing your book…").foregroundStyle(.secondary)
-                    Button("Cancel") { model.cancelOpen() }
-                } else { Button { model.open(displayed) } label: { Label("Read", systemImage: "book").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).disabled(book.format == .unsupported) }
-                if !overview.isEmpty { Text(overview).font(.body).textSelection(.enabled) }
-            }.padding(24).frame(maxWidth: 700).frame(maxWidth: .infinity)
+                }
+            }.padding(.horizontal, 24).padding(.vertical, 32).frame(maxWidth: 860).frame(maxWidth: .infinity)
         }
         .task(id: displayed.summary) { overview = BookOverview.plainText(displayed.summary) }
-        .navigationTitle("Book Details")
+        .appSurface().navigationTitle("Book Details")
+        .profileToolbar()
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            if model.isSaved(book) || model.hasSavedCopy(book) || model.isCached(book) {
+              ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    if model.openingID == book.id { Button("Cancel Download", systemImage: "xmark.circle") { model.cancelOpen() } }
-                    else if model.isCached(book) {
-                        Button("Remove from Device…", systemImage: "trash", role: .destructive) { confirmingRemoval = true }
-                            .disabled(model.reader?.id == book.id || model.openingID != nil)
-                    } else {
-                        Button("Download to Device", systemImage: "arrow.down.circle") { model.downloadToDevice(book) }
-                            .disabled(book.format == .unsupported || model.reader != nil || model.openingID != nil || model.markingID != nil)
-                    }
-                    Button(displayed.readingStatus == .finished ? "Mark as Unread" : "Mark as Read", systemImage: displayed.readingStatus == .finished ? "circle" : "checkmark.circle") {
-                        Task { await model.markFinished(displayed, finished: displayed.readingStatus != .finished) }
-                    }.disabled(model.reader != nil || model.openingID != nil || model.markingID != nil)
+                    Button(model.isSaved(book) || model.hasSavedCopy(book) ? "Remove from Device…" : "Remove Cached Copy…", systemImage: "trash", role: .destructive) { confirmingRemoval = true }
+                        .disabled(model.reader?.id == book.id || model.openingID != nil || model.download(for: book)?.state == .queued || model.download(for: book)?.state == .downloading)
                 } label: { Image(systemName: "ellipsis.circle").accessibilityLabel("Book actions") }
+              }
             }
         }
         .alert("Remove device copy?", isPresented: $confirmingRemoval) {
             Button("Remove from Device", role: .destructive) { Task { await model.removeDeviceCopy(book) } }
             Button("Cancel", role: .cancel) {}
-        } message: { Text("This removes the cached copy from this device only. The book stays on your Jellyfin server. Your bookmarks and reading position are kept.") }
+        } message: { Text("This removes only LibraVia’s device copy. Source files, bookmarks, highlights, notes, and reading position are kept.") }
         .task(id: "\(model.sessionID)|\(book.id)") {
             guard let provider = model.provider else { return }
             let fetched: Book
@@ -677,10 +953,135 @@ struct BookDetailView: View {
             }
         }
     }
+    private var detailCover: some View {
+        CoverView(book: displayed, fullSize: true, ambientBackground: true).modifier(ReaderCoverSource(book: displayed))
+            .frame(width: min(detailCoverWidth, 260))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.08)))
+            .shadow(color: .black.opacity(0.16), radius: 14, x: 0, y: 8)
+            .padding(.bottom, 8)
+    }
+    private var compactHeader: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            detailCover.frame(maxWidth: .infinity)
+            detailMetadata(wide: false)
+            detailOverview
+        }
+    }
+    @ViewBuilder private var detailOverview: some View {
+        if !overview.isEmpty {
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                Text("About this book").font(.headline).accessibilityAddTraits(.isHeader)
+                Text(overview).font(.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }.frame(maxWidth: 680, alignment: .leading)
+        }
+    }
+    private func detailMetadata(wide: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(displayed.title).font(.title.weight(.semibold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).accessibilityAddTraits(.isHeader)
+            if !displayed.authors.isEmpty {
+                ForEach(displayed.authors, id: \.name) { author in
+                    HStack(spacing: 10) {
+                        ZStack {
+                            Circle().fill(.quaternary)
+                            if let data = authorImages[author.name], let image = platformImage(data) { image.resizable().scaledToFill() }
+                            else { Image(systemName: "person.fill").foregroundStyle(.secondary) }
+                        }.frame(width: 38, height: 38).clipShape(Circle()).accessibilityHidden(true)
+                        Text(author.name).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+            } else if !displayed.author.isEmpty { Text(displayed.author).font(.subheadline).foregroundStyle(.secondary) }
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) { detailStatus }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) { detailStatus }
+                    VStack(alignment: .leading, spacing: 8) { detailStatus }
+                }
+            }
+            if model.openingID == book.id {
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView(value: model.downloadProgress).accessibilityLabel("Preparing book")
+                    Text(model.downloadProgress == nil ? "Checking reading position…" : "Preparing your book…").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            detailActions(wide: wide)
+            if let entry = model.download(for: book), entry.state == .failed {
+                Text(entry.failure ?? "The download could not be completed.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+    @ViewBuilder private var detailStatus: some View {
+        Text(displayed.readingStatus.rawValue).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        Text(displayed.format == .unsupported ? "Unsupported format" : displayed.format.rawValue.uppercased())
+            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        DeviceBookIndicator(book: book).font(.caption)
+    }
+    private func detailActions(wide: Bool) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { readAction(wide: wide); readingStatusAction; offlineAction }
+            VStack(alignment: .leading, spacing: 10) {
+                readAction(wide: wide)
+                HStack(spacing: 10) { readingStatusAction; offlineAction }
+            }
+        }
+        .controlSize(.large)
+        .padding(.top, 2)
+    }
+    private func readAction(wide: Bool) -> some View {
+        Group {
+            if model.openingID == book.id {
+                Button("Cancel Opening", systemImage: "xmark") { model.cancelOpen() }.buttonStyle(.bordered)
+            } else {
+                Button { model.open(displayed) } label: {
+                    Label("Read", systemImage: "book").fixedSize(horizontal: true, vertical: false).frame(maxWidth: wide ? 180 : .infinity, minHeight: 32)
+                }.buttonStyle(.borderedProminent).disabled(book.format == .unsupported)
+            }
+        }
+    }
+    private var offlineAction: some View {
+        Group {
+            if let entry = model.download(for: book), entry.state == .queued || entry.state == .downloading {
+                Button { model.cancelDownload(book.id) } label: { detailIconLabel(offlineActionTitle, systemImage: "xmark.circle") }
+            } else if let entry = model.download(for: book), entry.state == .failed || entry.state == .cancelled {
+                Button { model.retryDownload(entry) } label: { detailIconLabel(offlineActionTitle, systemImage: "arrow.clockwise") }
+            } else if model.isSaved(book) {
+                Button { } label: { detailIconLabel(offlineActionTitle, systemImage: "arrow.down.circle.fill") }.disabled(true)
+            } else {
+                Button { model.downloadToDevice(book) } label: { detailIconLabel(offlineActionTitle, systemImage: "arrow.down.circle") }
+                    .disabled(book.format == .unsupported || model.markingID != nil || model.openingID == book.id)
+            }
+        }
+        .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: false)
+        .buttonStyle(.bordered).buttonBorderShape(.circle)
+        .frame(minWidth: 44, minHeight: 44)
+        .accessibilityLabel(offlineActionTitle).help(offlineActionTitle)
+    }
+    private var offlineActionTitle: String {
+        if let entry = model.download(for: book), entry.state == .queued || entry.state == .downloading { return "Cancel Download" }
+        if let entry = model.download(for: book), entry.state == .failed || entry.state == .cancelled { return "Retry Download" }
+        return model.isSaved(book) ? "Saved Offline" : "Save for Offline"
+    }
+    private func detailIconLabel(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage).labelStyle(.iconOnly).frame(width: 32, height: 32)
+    }
+    private var readingStatusAction: some View {
+        Button {
+            Task { await model.markFinished(displayed, finished: displayed.readingStatus != .finished) }
+        } label: {
+            detailIconLabel(displayed.readingStatus == .finished ? "Mark as Unread" : "Mark as Read", systemImage: displayed.readingStatus == .finished ? "arrow.uturn.backward" : "checkmark")
+        }
+        .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: false)
+        .buttonStyle(.bordered).buttonBorderShape(.circle)
+        .frame(minWidth: 44, minHeight: 44)
+        .accessibilityLabel(displayed.readingStatus == .finished ? "Mark as Unread" : "Mark as Read")
+        .help(displayed.readingStatus == .finished ? "Mark as Unread" : "Mark as Read")
+        .disabled(model.reader != nil || model.openingID != nil || model.markingID != nil)
+    }
 }
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
-    @State private var cleared = false
+    @State private var confirmingSignOut = false
     var body: some View {
         Form {
             Section("Connection") {
@@ -688,31 +1089,69 @@ struct SettingsView: View {
                 LabeledContent("Server", value: model.account?.server.host ?? "")
                 Text("Jellyfin 12 · One active account").foregroundStyle(.secondary)
                 Button("Refresh Libraries") { Task { await model.loadLibraries() } }
-                Button("Sign Out", role: .destructive) { Task { await model.signOut() } }
+                Button("Sign Out…", role: .destructive) { confirmingSignOut = true }
             }
             Section("Storage") {
-                Text("Books are cached automatically, up to 1 GB. The open book is protected. Clearing the cache keeps your bookmarks and reading positions.")
-                Button(cleared ? "Cache Cleared" : "Clear Cache") { Task { do { try await model.cache?.clear(); await model.refreshCache(); cleared = true } catch { model.error = UserFacingError.message(error) } } }
+                NavigationLink("Manage Storage") { StorageManagementView() }
             }
             Section("About") {
-                Text("LibraVia · 0.1.0")
+                Text("LibraVia · \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")")
                 Text("EPUB, PDF, and CBZ · DRM-free books")
-                NavigationLink("Open-source licenses") { ScrollView { VStack(alignment: .leading, spacing: 20) { ForEach(["EPUBjs-LICENSE", "Get-LICENSE", "JSZip-LICENSE", "JellyfinAPI-LICENSE", "SwiftAtomics-LICENSE", "SwiftCollections-LICENSE", "SwiftNIO-LICENSE", "SwiftNIO-NOTICE", "SwiftNIO-llhttp-LICENSE", "SwiftNIOTransportServices-LICENSE", "SwiftSystem-LICENSE"], id: \.self) { name in Text(name).font(.headline); Text(license(name)).font(.caption).textSelection(.enabled) } }.padding() }.navigationTitle("Licenses") }
+                NavigationLink("Open-source licenses") { ScrollView { VStack(alignment: .leading, spacing: 20) { ForEach(["EPUBjs-LICENSE", "Get-LICENSE", "JSZip-LICENSE", "JellyfinAPI-LICENSE", "SwiftAtomics-LICENSE", "SwiftCollections-LICENSE", "SwiftNIO-LICENSE", "SwiftNIO-NOTICE", "SwiftNIO-llhttp-LICENSE", "SwiftNIOTransportServices-LICENSE", "SwiftSystem-LICENSE"], id: \.self) { name in Text(name).font(.headline); Text(license(name)).font(.caption).textSelection(.enabled) } }.padding() }.appSurface().navigationTitle("Licenses") }
             }
-        }.formStyle(.grouped).navigationTitle("Settings")
+        }.formStyle(.grouped).appSurface().navigationTitle("Settings")
+        .confirmationDialog("Sign out?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
+            Button("Sign Out", role: .destructive) { Task { await model.signOut() } }
+        } message: {
+            Text("Signing out removes this account’s local positions, bookmarks, notes, saved books and downloads, including unsynced changes. Your Jellyfin library and separate imported books are not deleted.")
+        }
     }
     private func license(_ name: String) -> String { guard let url = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "Licenses") else { return "License included with source distribution." }; return (try? String(contentsOf: url, encoding: .utf8)) ?? "" }
+}
+
+struct DownloadQueueView: View {
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        Group {
+            if model.downloads.isEmpty {
+                ContentUnavailableView("No downloads", systemImage: "arrow.down.circle", description: Text("Save a book for offline reading to add it here."))
+            } else {
+                List(model.downloads) { entry in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(entry.title).font(.headline)
+                        switch entry.state {
+                        case .queued: Text("Queued").foregroundStyle(.secondary)
+                        case .downloading:
+                            ProgressView(value: entry.progress).accessibilityLabel("Downloading \(entry.title)")
+                        case .available: Label("Saved offline", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
+                        case .failed: Text(entry.failure ?? "Download failed.").foregroundStyle(.secondary)
+                        case .cancelled: Text("Cancelled").foregroundStyle(.secondary)
+                        }
+                        if entry.state == .queued || entry.state == .downloading {
+                            Button("Cancel") { model.cancelDownload(entry.id) }
+                        } else if entry.state == .failed || entry.state == .cancelled {
+                            Button("Retry") { model.retryDownload(entry) }
+                        }
+                    }.padding(.vertical, 4)
+                }
+            }
+        }.appSurface().navigationTitle("Downloads")
+    }
 }
 
 struct DeviceBookIndicator: View {
     @Environment(AppModel.self) private var model
     var book: Book
     var body: some View {
-        if model.openingID == book.id {
+        if let download = model.download(for: book), download.state == .downloading {
+            ProgressView(value: download.progress).controlSize(.mini).frame(width: 20).accessibilityLabel("Downloading for offline reading")
+        } else if model.download(for: book)?.state == .queued {
+            Label("Queued", systemImage: "clock").foregroundStyle(.secondary)
+        } else if model.openingID == book.id {
             ProgressView(value: model.downloadProgress).controlSize(.mini).frame(width: 20).accessibilityLabel("Preparing device copy")
         } else {
-            Label(model.isCached(book) ? "On device" : "On server", systemImage: model.isCached(book) ? "checkmark.circle.fill" : "cloud")
-                .foregroundStyle(model.isCached(book) ? Color.green : Color.secondary)
+            Label(model.isSaved(book) ? "Saved offline" : (model.isCached(book) ? "Cached on device" : "On server"), systemImage: model.isSaved(book) ? "checkmark.circle.fill" : (model.isCached(book) ? "internaldrive" : "cloud"))
+                .foregroundStyle(model.isSaved(book) ? Color.green : Color.secondary)
         }
     }
 }
@@ -724,13 +1163,24 @@ struct BookActions: ViewModifier {
     func body(content: Content) -> some View {
         content.contextMenu {
             if !book.isFolder {
-                if model.openingID == book.id { Button("Cancel Download", role: .cancel) { model.cancelOpen() } }
-                else if model.isCached(book) {
+                if model.download(for: book)?.state == .queued || model.download(for: book)?.state == .downloading {
+                    Button("Cancel Download", role: .cancel) { model.cancelDownload(book.id) }
+                } else if let entry = model.download(for: book), entry.state == .failed || entry.state == .cancelled {
+                    Button("Retry Download", systemImage: "arrow.clockwise") { model.retryDownload(entry) }
+                    if model.hasSavedCopy(book) || model.isCached(book) {
+                        Button("Remove from Device…", systemImage: "trash", role: .destructive) { confirmingRemoval = true }
+                    }
+                } else if model.openingID == book.id { Button("Cancel Opening", role: .cancel) { model.cancelOpen() } }
+                else if model.isSaved(book) {
                     Button("Remove from Device…", systemImage: "trash", role: .destructive) { confirmingRemoval = true }
                         .disabled(model.reader?.id == book.id || model.openingID != nil)
                 } else {
-                    Button("Download to Device", systemImage: "arrow.down.circle") { model.downloadToDevice(book) }
-                        .disabled(book.format == .unsupported || model.reader != nil || model.openingID != nil || model.markingID != nil)
+                    Button("Save for Offline", systemImage: "arrow.down.circle") { model.downloadToDevice(book) }
+                        .disabled(book.format == .unsupported || model.markingID != nil)
+                    if model.isCached(book) {
+                        Button("Remove Cached Copy…", systemImage: "trash", role: .destructive) { confirmingRemoval = true }
+                            .disabled(model.reader?.id == book.id || model.openingID != nil)
+                    }
                 }
                 Button(displayed.readingStatus == .finished ? "Mark as Unread" : "Mark as Read", systemImage: displayed.readingStatus == .finished ? "circle" : "checkmark.circle") {
                     Task { await model.markFinished(displayed, finished: displayed.readingStatus != .finished) }
@@ -740,7 +1190,7 @@ struct BookActions: ViewModifier {
             Button("Remove from Device", role: .destructive) { Task { await model.removeDeviceCopy(book) } }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the cached copy from this device only. The book stays on your Jellyfin server. Your bookmarks and reading position are kept.")
+            Text("This removes the device copy only. The book stays on your Jellyfin server. Your bookmarks and reading position are kept.")
         }
     }
 }

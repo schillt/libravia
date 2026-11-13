@@ -1,5 +1,7 @@
 # Contributing
 
+Start with [AGENTS.md](AGENTS.md), the [architecture](docs/ARCHITECTURE.md), [roadmap](docs/ROADMAP.md), and [development workflow](docs/DEVELOPMENT.md). Issue branches target `alpha`; owner-authorized promotion follows `alpha` → `beta` → `preview` → `main`. Architecture decisions are recorded in [ADRs](docs/adr/README.md). Merged code and accepted release gates are separate outcomes.
+
 LibraVia is an early native Apple-platform MVP. The project retains all rights under LICENSE; discuss contribution terms with the maintainer before submitting code.
 
 Use the shared LibraVia scheme and the documented OS 27 toolchain. Keep provider-neutral models separate from Jellyfin DTOs. Prefer Apple frameworks and the official Jellyfin SDK; do not add dependencies without discussing first-party provenance and necessity.

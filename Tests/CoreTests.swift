@@ -2,6 +2,66 @@ import XCTest
 @testable import BookCore
 
 final class CoreTests: XCTestCase {
+    func testRapidTurnQueuePreservesForwardReverseOrderAndCanBeCleared() {
+        var queue = ReaderRapidTurnQueue()
+        queue.append("next"); queue.append("previous"); queue.append("next")
+        XCTAssertEqual(queue.takeNext(), "next")
+        // New input during settling belongs after already accepted input.
+        queue.beginSettling()
+        queue.append("previous")
+        XCTAssertNil(queue.takeNext(), "The next render must wait for settling or interruption")
+        queue.endSettling() // e.g. a fresh gesture interrupts the decoration.
+        XCTAssertEqual(queue.takeNext(), "previous")
+        XCTAssertEqual(queue.takeNext(), "next")
+        XCTAssertEqual(queue.takeNext(), "previous")
+        XCTAssertNil(queue.takeNext())
+        queue.append("next"); queue.beginSettling(); queue.removeAll()
+        XCTAssertTrue(queue.isEmpty)
+        XCTAssertFalse(queue.isSettling)
+    }
+    func testRapidTurnQueuePreservesOrderWhileGestureGuardsResolveOutOfOrder() {
+        var queue = ReaderRapidTurnQueue()
+        let first = queue.reserve("next")
+        let second = queue.reserve("previous")
+        let third = queue.reserve("next")
+        XCTAssertTrue(queue.resolve(second, allowed: true))
+        XCTAssertTrue(queue.resolve(third, allowed: true))
+        XCTAssertFalse(queue.hasReady)
+        XCTAssertNil(queue.takeNext(), "Later validated gestures must not overtake the first guard")
+        queue.interruptDecoration()
+        XCTAssertTrue(queue.resolve(first, allowed: true))
+        XCTAssertEqual(queue.takeNext(), "next")
+        XCTAssertEqual(queue.takeNext(), "previous")
+        XCTAssertEqual(queue.takeNext(), "next")
+        let link = queue.reserve("next"), reverse = queue.reserve("previous")
+        XCTAssertTrue(queue.resolve(reverse, allowed: true))
+        XCTAssertTrue(queue.resolve(link, allowed: false), "A rejected link or selection must not turn")
+        XCTAssertEqual(queue.takeNext(), "previous")
+        XCTAssertNil(queue.takeNext())
+        let old = queue.reserve("next")
+        queue.removeAll()
+        XCTAssertFalse(queue.resolve(old, allowed: true), "Old reader callbacks cannot resurrect discarded requests")
+    }
+    func testRapidTurnQueueKeepsAcceptedInputAcrossLayoutInterruption() {
+        var queue = ReaderRapidTurnQueue()
+        queue.append("next"); queue.append("previous"); queue.append("next")
+        queue.beginSettling()
+        queue.interruptDecoration()
+        XCTAssertEqual(queue.takeNext(), "next")
+        XCTAssertEqual(queue.takeNext(), "previous")
+        XCTAssertEqual(queue.takeNext(), "next")
+        XCTAssertNil(queue.takeNext())
+    }
+    func testReaderSidebarActionsToggleOrSwitchTheRequestedPanel() {
+        for target in [ReaderPanel.contents, .search, .appearance] {
+            XCTAssertEqual(ReaderPanel.afterToggle(target, active: nil, visible: false), target)
+            XCTAssertNil(ReaderPanel.afterToggle(target, active: target, visible: true))
+            XCTAssertEqual(ReaderPanel.afterToggle(target, active: target, visible: false), target)
+        }
+        XCTAssertEqual(ReaderPanel.afterToggle(.search, active: .contents, visible: true), .search)
+        XCTAssertEqual(ReaderPanel.afterToggle(.appearance, active: .search, visible: true), .appearance)
+        XCTAssertEqual(ReaderPanel.afterToggle(.contents, active: .appearance, visible: true), .contents)
+    }
     @MainActor func testOverviewUsesNativeTextWithoutExternalResources() {
         XCTAssertEqual(BookOverview.plainText("<p>A <b>book</b> &amp; a story.</p><p>Next chapter &quot;two&quot;.</p>"), "A book & a story.\nNext chapter \"two\".")
         XCTAssertEqual(BookOverview.plainText("<script>bad()</script><style>body{}</style><p>Safe<img src='https://invalid.example/image'><iframe src='https://invalid.example'>hidden</iframe></p>"), "Safe")
@@ -15,7 +75,70 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(preferences.theme, "sepia")
         XCTAssertEqual(preferences.fontSize, 23)
         XCTAssertEqual(preferences.pageTransition, "slide")
+        XCTAssertEqual(preferences.pageTapZoneFraction, 0.2)
         XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: JSONEncoder().encode(preferences)), preferences)
+    }
+    func testPaginationLabelsDistinguishExactPagesEstimatesAndScrolling() {
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0, total: 20, estimated: false), "Page 1 of 20")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 1, total: 20, estimated: false), "Page 20 of 20")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0.5, total: 20, estimated: true), "About page 11 of 20")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0.5, total: 20, estimated: true, scrolling: true), "50% through book")
+        XCTAssertEqual(ReaderPagination.bookLabel(at: 0.5, total: 0, estimated: true), "Book page estimate unavailable")
+        XCTAssertEqual(ReaderPagination.page(at: 0.7, total: 1), 1)
+        XCTAssertEqual(ReaderPagination.page(at: 2, total: 20), 20)
+        XCTAssertEqual(ReaderPagination.page(at: .nan, total: 20), 1)
+        // Scrub previews and destination indices share the same one-based page mapping.
+        XCTAssertEqual(ReaderPagination.page(at: 0.25, total: 9) - 1, 2)
+    }
+    func testReaderTapZonesPreserveCenterAndDisableTurnsWhenZoomedOrNotReady() {
+        XCTAssertEqual(ReaderTapAction.action(at: 0.05, edge: 0.2, canTurn: true), .previous)
+        XCTAssertEqual(ReaderTapAction.action(at: 0.95, edge: 0.2, canTurn: true), .next)
+        for center in [0.2, 0.5, 0.8] { XCTAssertEqual(ReaderTapAction.action(at: center, edge: 0.2, canTurn: true), .controls) }
+        XCTAssertEqual(ReaderTapAction.action(at: 0.15, edge: 0.1, canTurn: true), .controls)
+        XCTAssertEqual(ReaderTapAction.action(at: 0.15, edge: 0.3, canTurn: true), .previous)
+        for point in [0.0, 0.5, 1.0, Double.nan] { XCTAssertEqual(ReaderTapAction.action(at: point, edge: 0.2, canTurn: false), .controls) }
+        XCTAssertEqual(ReaderTapAction.action(at: -1, edge: 0.2, canTurn: true), .controls)
+    }
+    func testTapZoneWidthPersistsAndInvalidSavedWidthsKeepCenterReachable() throws {
+        var preferences = ReaderPreferences(); preferences.pageTapZoneFraction = 0.25
+        XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: JSONEncoder().encode(preferences)).pageTapZoneFraction, 0.25)
+        for (saved, expected) in [(0.01, 0.1), (0.9, 0.3)] {
+            let data = Data("{\"pageTapZoneFraction\":\(saved)}".utf8)
+            XCTAssertEqual(try JSONDecoder().decode(ReaderPreferences.self, from: data).pageTapZoneFraction, expected)
+        }
+    }
+    func testPageTurnReleaseIntentSupportsFlicksAndCancellingPeeks() {
+        XCTAssertTrue(ReaderTurnDecision.commits(translation: -160, velocity: 0, width: 375))
+        XCTAssertTrue(ReaderTurnDecision.commits(translation: -30, velocity: -900, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: -160, velocity: 250, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: -30, velocity: 0, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: 0, velocity: 1500, width: 375))
+        XCTAssertFalse(ReaderTurnDecision.commits(translation: .nan, velocity: 0, width: 375))
+    }
+    func testInvalidatedPreviewCaptureStillTimesOutAndCannotPublish() throws {
+        var state = ReaderPreviewCaptureState()
+        let first = try XCTUnwrap(state.begin())
+        state.invalidate() // A highlight changes while WebKit is capturing.
+        XCTAssertNil(state.begin(), "Keep one capture in flight")
+        XCTAssertTrue(state.timeout(first), "Invalidation must not disable the watchdog")
+        XCTAssertTrue(state.timedOut)
+        XCTAssertNil(state.begin(), "Do not overlap a timed-out capture")
+        XCTAssertFalse(state.timeout(first), "Timeout is delivered only once")
+        XCTAssertEqual(state.finish(first), false, "A late stale image cannot publish")
+        XCTAssertFalse(state.timedOut)
+        let next = try XCTUnwrap(state.begin())
+        XCTAssertNil(state.finish(first), "A retired callback cannot affect the next request")
+        XCTAssertEqual(state.finish(next), true)
+    }
+
+    func testInvalidatedPreviewCaptureThatCompletesCanBeRetried() throws {
+        var state = ReaderPreviewCaptureState()
+        let first = try XCTUnwrap(state.begin())
+        state.invalidate()
+        XCTAssertEqual(state.finish(first), false)
+        let next = try XCTUnwrap(state.begin())
+        XCTAssertEqual(state.finish(next), true)
+        XCTAssertFalse(state.timeout(next), "A completed capture must not later time out")
     }
     func testProgressInteroperabilityUnits() {
         XCTAssertEqual(ReadingPosition(fraction: 0.42).ticks(for: .epub), 4_200_000)
